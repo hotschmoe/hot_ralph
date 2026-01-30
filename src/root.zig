@@ -1,23 +1,55 @@
-//! By convention, root.zig is the root source file when making a library.
+//! ralph - Atomic task execution with Claude and Beads
+//!
+//! A CLI tool that orchestrates atomic development tasks by integrating
+//! Claude AI with the Beads task tracking system.
+
 const std = @import("std");
 
-pub fn bufferedPrint() !void {
-    // Stdout is for the actual output of your application, for example if you
-    // are implementing gzip, then only the compressed bytes should be sent to
-    // stdout, not any debugging messages.
-    var stdout_buffer: [1024]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
-    const stdout = &stdout_writer.interface;
+pub const config = @import("config.zig");
+pub const state = @import("state.zig");
+pub const prompt = @import("prompt.zig");
+pub const ui = @import("ui.zig");
+pub const beads = @import("beads.zig");
+pub const claude = @import("claude.zig");
+pub const git = @import("git.zig");
 
-    try stdout.print("Run `zig build test` to run the tests.\n", .{});
+// Re-export commonly used types
+pub const Config = config.Config;
+pub const Args = config.Args;
+pub const ConfigError = config.ConfigError;
 
-    try stdout.flush(); // Don't forget to flush!
-}
+pub const State = state.State;
+pub const Phase = state.Phase;
+pub const StateError = state.StateError;
 
-pub fn add(a: i32, b: i32) i32 {
-    return a + b;
-}
+pub const Task = beads.Task;
+pub const TaskStatus = beads.TaskStatus;
+pub const Beads = beads.Beads;
+pub const BeadsError = beads.BeadsError;
 
-test "basic add functionality" {
-    try std.testing.expect(add(3, 7) == 10);
+pub const Claude = claude.Claude;
+pub const ClaudeError = claude.ClaudeError;
+pub const RunResult = claude.RunResult;
+pub const RunOptions = claude.RunOptions;
+pub const StreamParser = claude.StreamParser;
+
+pub const Git = git.Git;
+pub const GitError = git.GitError;
+
+pub const UI = ui.UI;
+pub const ExecuteChoice = ui.ExecuteChoice;
+pub const SuccessChoice = ui.SuccessChoice;
+
+pub const TaskPrompt = prompt.TaskPrompt;
+pub const SimplificationPrompt = prompt.SimplificationPrompt;
+pub const FinalReviewPrompt = prompt.FinalReviewPrompt;
+pub const IntrospectionPrompt = prompt.IntrospectionPrompt;
+
+// Version info
+pub const version = "0.1.0";
+pub const version_string = "ralph " ++ version;
+
+test {
+    // Run all module tests
+    std.testing.refAllDecls(@This());
 }
