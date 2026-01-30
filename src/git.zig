@@ -127,7 +127,7 @@ pub fn generateCommitMessage(task_title: []const u8, allocator: mem.Allocator) !
     // "Implement feature X" -> "Implement feature X"
     // Keep it simple - just use the task title directly
 
-    return try std.fmt.allocPrint(allocator, "{s}\n\nCompleted via ralph automation.", .{task_title});
+    return try std.fmt.allocPrint(allocator, "{s}\n\nCompleted via hot_ralph automation.", .{task_title});
 }
 
 pub fn generateBeadsCommitMessage(task_id: []const u8, allocator: mem.Allocator) ![]const u8 {
@@ -147,7 +147,7 @@ test "generateCommitMessage" {
     defer allocator.free(msg);
 
     try std.testing.expect(mem.indexOf(u8, msg, "Implement feature X") != null);
-    try std.testing.expect(mem.indexOf(u8, msg, "ralph automation") != null);
+    try std.testing.expect(mem.indexOf(u8, msg, "hot_ralph automation") != null);
 }
 
 test "generateBeadsCommitMessage" {

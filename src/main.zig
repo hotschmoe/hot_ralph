@@ -280,7 +280,7 @@ fn run() !u8 {
         }
 
         // Complete the task
-        beads.complete(task.id, "Completed via ralph") catch |err| {
+        beads.complete(task.id, "Completed via hot_ralph") catch |err| {
             try ui.errFmt("Failed to complete task: {s}", .{@errorName(err)});
             return EXIT_BEADS;
         };

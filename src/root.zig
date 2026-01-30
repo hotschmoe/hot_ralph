@@ -1,4 +1,4 @@
-//! ralph - Atomic task execution with Claude and Beads
+//! hot_ralph - Atomic task execution with Claude and Beads
 //!
 //! A CLI tool that orchestrates atomic development tasks by integrating
 //! Claude AI with the Beads task tracking system.
@@ -47,7 +47,7 @@ pub const IntrospectionPrompt = prompt.IntrospectionPrompt;
 
 // Version info
 pub const version = "0.2.0";
-pub const version_string = "ralph " ++ version;
+pub const version_string = "hot_ralph " ++ version;
 
 test {
     // Run all module tests

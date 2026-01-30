@@ -178,10 +178,10 @@ fn checkCommandExists(allocator: mem.Allocator, command: []const u8, err_val: Co
 
 pub fn printHelp(writer: anytype) !void {
     try writer.writeAll(
-        \\ralph - Atomic task execution with Claude and Beads
+        \\hot_ralph - Atomic task execution with Claude and Beads
         \\
         \\USAGE:
-        \\    ralph [OPTIONS] [PROJECT_DIR]
+        \\    hot_ralph [OPTIONS] [PROJECT_DIR]
         \\
         \\ARGS:
         \\    PROJECT_DIR    Path to project directory (default: current directory)
@@ -219,7 +219,7 @@ pub fn printHelp(writer: anytype) !void {
 }
 
 pub fn printVersion(writer: anytype) !void {
-    try writer.writeAll("ralph 0.2.0\n");
+    try writer.writeAll("hot_ralph 0.2.0\n");
 }
 
 test "Args.parse - default values" {
