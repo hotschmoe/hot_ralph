@@ -6,60 +6,60 @@ These features exist in the original `hot_ralph` bash script and must be ported 
 
 ### Core Workflow
 
-| Feature | Bash Implementation | Notes |
-|---------|---------------------|-------|
-| Project directory argument | `PROJECT_DIR="$1"` | Default to current directory |
-| Auto mode | `--auto` / `-a` flag | Skip all user prompts, assume yes |
-| Requirements check | `require_file`, `require_command` | Validate SPEC.md, VISION.md, TESTING.md, claude, br, .beads/ |
-| Output directory | `.hot_ralph/` | Create if missing |
-| Timestamped output files | `YYYYMMDD_HHMMSS_{label}.md` | All Claude responses saved |
+| Feature | Bash Implementation | Notes | Status |
+|---------|---------------------|-------|--------|
+| Project directory argument | `PROJECT_DIR="$1"` | Default to current directory | DONE |
+| Auto mode | `--auto` / `-a` flag | Skip all user prompts, assume yes | DONE |
+| Requirements check | `require_file`, `require_command` | Validate SPEC.md, VISION.md, TESTING.md, claude, br, .beads/ | DONE |
+| Output directory | `.hot_ralph/` | Create if missing | DONE |
+| Timestamped output files | `YYYYMMDD_HHMMSS_{label}.md` | All Claude responses saved | DONE |
 
 ### Beads Integration
 
-| Feature | Bash Implementation | Notes |
-|---------|---------------------|-------|
-| Ready count | `br ready --json \| jq 'length'` | Check if tasks available |
-| Get next task | `br ready --json \| jq 'sort_by(.priority, .created_at) \| .[0]'` | Priority + creation order |
-| Claim task | `br update <id> --status in_progress` | Mark as in-progress |
-| Complete task | `br close <id> --reason "..."` | Mark as done |
-| Sync beads | `br sync` | Export to JSONL for git |
+| Feature | Bash Implementation | Notes | Status |
+|---------|---------------------|-------|--------|
+| Ready count | `br ready --json \| jq 'length'` | Check if tasks available | DONE |
+| Get next task | `br ready --json \| jq 'sort_by(.priority, .created_at) \| .[0]'` | Priority + creation order | DONE |
+| Claim task | `br update <id> --status in_progress` | Mark as in-progress | DONE |
+| Complete task | `br close <id> --reason "..."` | Mark as done | DONE |
+| Sync beads | `br sync` | Export to JSONL for git | DONE |
 
 ### Claude Integration
 
-| Feature | Bash Implementation | Notes |
-|---------|---------------------|-------|
-| Run Claude | `claude --print --verbose --output-format stream-json --dangerously-skip-permissions` | Streaming JSON output |
-| Stream to terminal | `jq \| tee` | Show output while capturing |
-| Task prompt | Structured markdown with context files | @SPEC.md, @VISION.md, @TESTING.md |
-| Simplification pass | Second Claude call after task success | Review and simplify changes |
-| Final review | Claude call when all tasks complete | Check against VISION.md |
+| Feature | Bash Implementation | Notes | Status |
+|---------|---------------------|-------|--------|
+| Run Claude | `claude --print --verbose --output-format stream-json --dangerously-skip-permissions` | Streaming JSON output | DONE |
+| Stream to terminal | `jq \| tee` | Show output while capturing | DONE |
+| Task prompt | Structured markdown with context files | @SPEC.md, @VISION.md, @TESTING.md | DONE |
+| Simplification pass | Second Claude call after task success | Review and simplify changes | DONE |
+| Final review | Claude call when all tasks complete | Check against VISION.md | DONE |
 
 ### Git Operations
 
-| Feature | Bash Implementation | Notes |
-|---------|---------------------|-------|
-| Commit beads | `git add .beads/ && git commit` | After task completion |
-| Commit all | `git add -A && git commit` | After simplification |
-| Periodic push | `git push` (20% chance per task) | Background, ignore failures |
+| Feature | Bash Implementation | Notes | Status |
+|---------|---------------------|-------|--------|
+| Commit beads | `git add .beads/ && git commit` | After task completion | DONE |
+| Commit all | `git add -A && git commit` | After simplification | DONE |
+| Periodic push | `git push` (20% chance per task) | Background, ignore failures | DONE |
 
 ### User Interaction
 
-| Feature | Bash Implementation | Notes |
-|---------|---------------------|-------|
-| Execute prompt | `[Y/n/s(kip)/v(iew all)/q]` | Before each task |
-| Success prompt | `[Y/n/r(etry)]` | After Claude completes |
-| Countdown window | 5 seconds between tasks | Ctrl+C opportunity |
-| Graceful exit | `trap SIGINT` | Sync beads before exit |
-| Task display | Show title, ID, priority, ready count, tags, description | Clear task context |
+| Feature | Bash Implementation | Notes | Status |
+|---------|---------------------|-------|--------|
+| Execute prompt | `[Y/n/s(kip)/v(iew all)/q]` | Before each task | DONE |
+| Success prompt | `[Y/n/r(etry)]` | After Claude completes | DONE |
+| Countdown window | 5 seconds between tasks | Ctrl+C opportunity | DONE |
+| Graceful exit | `trap SIGINT` | Sync beads before exit | DONE |
+| Task display | Show title, ID, priority, ready count, tags, description | Clear task context | DONE |
 
 ### Error Handling (Improve)
 
-| Bash Problem | Zig Solution |
-|--------------|--------------|
-| Silent `set -e` failures | Explicit error unions |
-| `eval` code injection risk | Native JSON parsing |
-| Unclear crash state | Checkpoint/resume |
-| jq dependency | stdlib JSON |
+| Bash Problem | Zig Solution | Status |
+|--------------|--------------|--------|
+| Silent `set -e` failures | Explicit error unions | DONE |
+| `eval` code injection risk | Native JSON parsing | DONE |
+| Unclear crash state | Checkpoint/resume | DONE |
+| jq dependency | stdlib JSON | DONE |
 
 ---
 
@@ -67,7 +67,7 @@ These features exist in the original `hot_ralph` bash script and must be ported 
 
 Features not in the bash script that improve the CLI experience.
 
-### Checkpoint/Resume
+### Checkpoint/Resume - DONE
 
 **Problem**: Crash mid-task and state is unclear.
 
@@ -85,7 +85,7 @@ On startup, detect existing state and offer to resume.
 
 Phases: `idle`, `executing`, `awaiting_confirmation`, `simplifying`
 
-### Native JSON Streaming Parser
+### Native JSON Streaming Parser - DONE
 
 **Problem**: Bash uses `jq --unbuffered` to parse Claude's streaming JSON. Fragile, external dependency.
 
@@ -100,7 +100,7 @@ const StreamParser = struct {
 
 Handle tool use blocks, thinking blocks, and text content. No jq dependency.
 
-### Concurrent Git Push
+### Concurrent Git Push - DONE
 
 **Problem**: `git push` blocks the workflow.
 
@@ -113,7 +113,7 @@ push_thread.join();
 
 Non-blocking, errors logged but don't halt workflow.
 
-### Structured Prompt Templates
+### Structured Prompt Templates - DONE
 
 **Problem**: Bash embeds prompts as heredocs. Hard to test, modify, or validate.
 
@@ -131,7 +131,7 @@ const TaskPrompt = struct {
 
 Templates can be unit tested. Missing fields caught at compile time.
 
-### Better Task Display
+### Better Task Display - DONE
 
 **Problem**: Bash shows minimal task info.
 
@@ -149,7 +149,7 @@ Description here...
 
 Show what this task unblocks, helping prioritization decisions.
 
-### Validation Before Execution
+### Validation Before Execution - DONE
 
 **Problem**: Bash only checks requirements at startup.
 
@@ -161,7 +161,7 @@ Show what this task unblocks, helping prioritization decisions.
 
 Fail fast with actionable error messages.
 
-### Dry Run Mode
+### Dry Run Mode - DONE
 
 **Problem**: No way to preview what hot_ralph will do.
 
@@ -177,7 +177,7 @@ Shows:
 
 No Claude calls, no git operations, no state changes.
 
-### Verbose/Quiet Modes
+### Verbose/Quiet Modes - DONE
 
 **Problem**: Bash output is fixed verbosity.
 
@@ -187,7 +187,7 @@ No Claude calls, no git operations, no state changes.
 
 Default: Current bash behavior (task info + Claude output).
 
-### Exit Codes
+### Exit Codes - DONE
 
 **Problem**: Bash exits 0 or 1, no granularity.
 
@@ -203,7 +203,7 @@ Default: Current bash behavior (task info + Claude output).
 
 Scripts can handle different failure modes appropriately.
 
-### Exit After Current Task
+### Exit After Current Task - DONE
 
 **Problem**: User wants to stop but must wait for 5-second countdown window to Ctrl+C.
 
@@ -228,7 +228,7 @@ Benefits:
 
 Implementation: Spawn input monitoring thread that sets atomic flag on `e` keypress.
 
-### Claude Introspection
+### Claude Introspection - DONE
 
 **Problem**: Development patterns emerge over time. CLAUDE.md becomes stale. Opportunities for skills/agents go unnoticed.
 
