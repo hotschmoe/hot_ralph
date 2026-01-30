@@ -52,7 +52,7 @@ fn run() !u8 {
     defer config.deinit();
 
     // Initialize UI
-    var ui = ralph.UI.init(allocator, config.auto_mode);
+    var ui = ralph.UI.init(allocator, config.auto_mode, config.verbose, config.quiet);
 
     // Check requirements
     ralph.config.checkRequirements(&config) catch |err| {
@@ -189,6 +189,12 @@ fn run() !u8 {
             .yes => {},
         }
 
+        // Dry-run mode: show what would be done without executing
+        if (config.dry_run) {
+            try ui.statusFmt("DRY-RUN: Would execute task {s}", .{task.id});
+            continue;
+        }
+
         // Claim the task
         beads.claim(task.id) catch |err| {
             try ui.errFmt("Failed to claim task: {s}", .{@errorName(err)});
@@ -223,7 +229,7 @@ fn run() !u8 {
         // Run Claude
         const result = claude.run(prompt_text, .{
             .output_file = output_filename,
-            .stream_to_terminal = true,
+            .stream_to_terminal = config.verbose,
             .working_dir = config.project_dir,
         }) catch |err| {
             try ui.errFmt("Claude execution failed: {s}", .{@errorName(err)});
@@ -278,6 +284,60 @@ fn run() !u8 {
 
         try ui.statusFmt("Task {s} completed.", .{task.id});
 
+        // Simplification pass
+        simplify: {
+            state.phase = .simplifying;
+            try state.save(state_path);
+
+            try ui.status("Running simplification pass...");
+            const simplify_prompt = ralph.SimplificationPrompt.init(task.title);
+            const simplify_text = simplify_prompt.renderToString(allocator) catch {
+                try ui.info("Simplification pass skipped (prompt error)");
+                state.phase = .idle;
+                break :simplify;
+            };
+            defer allocator.free(simplify_text);
+
+            const label = std.fmt.allocPrint(allocator, "simplify_{s}", .{task.id}) catch {
+                try ui.info("Simplification pass skipped (format error)");
+                state.phase = .idle;
+                break :simplify;
+            };
+            defer allocator.free(label);
+
+            const simplify_output = ralph.ui.generateOutputFilename(allocator, config.output_dir, label) catch {
+                try ui.info("Simplification pass skipped (output path error)");
+                state.phase = .idle;
+                break :simplify;
+            };
+            defer allocator.free(simplify_output);
+
+            const simplify_result = claude.run(simplify_text, .{
+                .output_file = simplify_output,
+                .stream_to_terminal = config.verbose,
+                .working_dir = config.project_dir,
+            }) catch {
+                try ui.info("Simplification pass skipped (Claude error)");
+                state.phase = .idle;
+                break :simplify;
+            };
+
+            switch (simplify_result) {
+                .success => |s| {
+                    allocator.free(s.response_text);
+                    try ui.status("Simplification complete.");
+                },
+                .failure => |f| {
+                    allocator.free(f.message);
+                    try ui.info("Simplification pass completed with warnings.");
+                },
+                .interrupted => {
+                    try ui.info("Simplification interrupted.");
+                },
+            }
+            state.phase = .idle;
+        }
+
         // Git commit
         git.addAll() catch |err| {
             try ui.errFmt("Git add failed: {s}", .{@errorName(err)});
@@ -294,14 +354,12 @@ fn run() !u8 {
             }
         };
 
-        // Periodic push (20% chance)
+        // Periodic background push (20% chance)
         push_probability += 20;
         if (push_probability >= 100) {
             push_probability = 0;
-            try ui.status("Pushing to remote...");
-            git.push() catch {
-                // Ignore push failures
-            };
+            try ui.status("Pushing to remote (background)...");
+            _ = git.pushBackground() catch {};
         }
 
         // Update counters
@@ -309,6 +367,55 @@ fn run() !u8 {
         state.incrementTaskCount();
         state.clearTask();
         try state.save(state_path);
+
+        // Periodic introspection (every 5 tasks when enabled)
+        const INTROSPECTION_INTERVAL: u32 = 5;
+        if (config.introspection_enabled and state.tasks_since_introspection >= INTROSPECTION_INTERVAL) {
+            try ui.status("Running introspection...");
+
+            // Collect task logs from output directory
+            var task_logs: std.ArrayList([]const u8) = .empty;
+            defer {
+                for (task_logs.items) |log| {
+                    allocator.free(log);
+                }
+                task_logs.deinit(allocator);
+            }
+
+            // Read CLAUDE.md if it exists
+            const claude_md_path = try fs.path.join(allocator, &.{ config.project_dir, "CLAUDE.md" });
+            defer allocator.free(claude_md_path);
+            const claude_md_content: ?[]const u8 = blk: {
+                const file = fs.openFileAbsolute(claude_md_path, .{}) catch break :blk null;
+                defer file.close();
+                break :blk file.readToEndAlloc(allocator, 1024 * 1024) catch null;
+            };
+            defer if (claude_md_content) |c| allocator.free(c);
+
+            const introspection = ralph.IntrospectionPrompt{
+                .task_logs = task_logs.items,
+                .claude_md_content = claude_md_content,
+                .existing_skills = &.{},
+                .existing_agents = &.{},
+            };
+            const intro_text = try introspection.renderToString(allocator);
+            defer allocator.free(intro_text);
+
+            const intro_output = try ralph.ui.generateOutputFilename(allocator, config.output_dir, "introspection");
+            defer allocator.free(intro_output);
+
+            _ = claude.run(intro_text, .{
+                .output_file = intro_output,
+                .stream_to_terminal = config.verbose,
+                .working_dir = config.project_dir,
+            }) catch {
+                try ui.info("Introspection skipped (Claude error)");
+            };
+
+            state.resetTaskCount();
+            try state.save(state_path);
+            try ui.status("Introspection complete.");
+        }
 
         // Countdown between tasks (if not in auto mode)
         if (!config.auto_mode) {
@@ -321,6 +428,27 @@ fn run() !u8 {
 
     // Final sync
     try syncBeadsAndExit(&beads, &state, state_path, &ui);
+
+    // Final review (if tasks were completed and not in dry-run mode)
+    if (tasks_completed > 0 and !config.dry_run) {
+        try ui.status("Running final review...");
+
+        const review_text = try ralph.FinalReviewPrompt.renderToString(allocator);
+        defer allocator.free(review_text);
+
+        const review_output = try ralph.ui.generateOutputFilename(allocator, config.output_dir, "final_review");
+        defer allocator.free(review_output);
+
+        _ = claude.run(review_text, .{
+            .output_file = review_output,
+            .stream_to_terminal = config.verbose,
+            .working_dir = config.project_dir,
+        }) catch {
+            try ui.info("Final review skipped (Claude error)");
+        };
+
+        try ui.status("Final review complete.");
+    }
 
     // Display summary
     try ui.displayComplete(tasks_completed);

@@ -46,7 +46,7 @@ pub const FinalReviewPrompt = prompt.FinalReviewPrompt;
 pub const IntrospectionPrompt = prompt.IntrospectionPrompt;
 
 // Version info
-pub const version = "0.1.0";
+pub const version = "0.2.0";
 pub const version_string = "ralph " ++ version;
 
 test {

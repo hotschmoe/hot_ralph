@@ -1,6 +1,7 @@
 const std = @import("std");
 const mem = std.mem;
 const fs = std.fs;
+const rich = @import("rich_zig");
 
 pub const ExecuteChoice = enum {
     yes,
@@ -30,14 +31,18 @@ pub const UI = struct {
     stdout: fs.File,
     stdin: fs.File,
     auto_mode: bool,
+    verbose: bool,
+    quiet: bool,
     stdout_buf: [4096]u8 = undefined,
 
-    pub fn init(allocator: mem.Allocator, auto_mode: bool) UI {
+    pub fn init(allocator: mem.Allocator, auto_mode: bool, verbose: bool, quiet: bool) UI {
         return UI{
             .allocator = allocator,
             .stdout = fs.File.stdout(),
             .stdin = fs.File.stdin(),
             .auto_mode = auto_mode,
+            .verbose = verbose,
+            .quiet = quiet,
         };
     }
 
@@ -50,42 +55,70 @@ pub const UI = struct {
     }
 
     pub fn displayTask(self: *UI, task: Task, ready_count: usize, blocked_count: usize) !void {
+        if (self.quiet) return;
+
         var writer = self.getWriter();
         const w = &writer.interface;
-
         try w.writeAll("\n");
-        try w.writeAll("---------------------------------------------------------------\n");
-        try w.print("  TASK: {s}\n", .{task.title});
-        try w.print("  ID: {s} | Priority: {d} | Ready: {d} | Blocked: {d}\n", .{
-            task.id,
+
+        // Build content with styled priority
+        const priority_color: []const u8 = switch (task.priority) {
+            0 => "red",
+            1 => "yellow",
+            2 => "cyan",
+            else => "dim",
+        };
+
+        // Format priority line with color markup
+        const priority_line = try std.fmt.allocPrint(self.allocator, "[bold {s}]P{d}[/] | Ready: {d} | Blocked: {d}", .{
+            priority_color,
             task.priority,
             ready_count,
             blocked_count,
         });
+        defer self.allocator.free(priority_line);
 
+        // Build tags line if present
+        var tags_line: ?[]const u8 = null;
         if (task.tags.len > 0) {
-            try w.writeAll("  Tags: ");
+            var tags_buf: std.ArrayList(u8) = .empty;
+            defer tags_buf.deinit(self.allocator);
+            try tags_buf.appendSlice(self.allocator, "Tags: ");
             for (task.tags, 0..) |tag, i| {
-                if (i > 0) try w.writeAll(", ");
-                try w.print("{s}", .{tag});
+                if (i > 0) try tags_buf.appendSlice(self.allocator, ", ");
+                try tags_buf.appendSlice(self.allocator, tag);
             }
-            try w.writeAll("\n");
+            tags_line = try tags_buf.toOwnedSlice(self.allocator);
         }
+        defer if (tags_line) |t| self.allocator.free(t);
 
-        if (task.blocks.len > 0) {
-            try w.writeAll("  Blocks: ");
-            for (task.blocks, 0..) |blocked_id, i| {
-                if (i > 0) try w.writeAll(", ");
-                try w.print("{s}", .{blocked_id});
-            }
-            try w.writeAll("\n");
+        // Build the body content
+        var body_parts: std.ArrayList(u8) = .empty;
+        defer body_parts.deinit(self.allocator);
+
+        try body_parts.appendSlice(self.allocator, priority_line);
+        if (tags_line) |t| {
+            try body_parts.appendSlice(self.allocator, "\n");
+            try body_parts.appendSlice(self.allocator, t);
         }
-
-        try w.writeAll("---------------------------------------------------------------\n");
-
         if (task.description) |desc| {
-            try w.print("{s}\n", .{desc});
-            try w.writeAll("---------------------------------------------------------------\n");
+            try body_parts.appendSlice(self.allocator, "\n\n");
+            try body_parts.appendSlice(self.allocator, desc);
+        }
+
+        // Create the title with ID
+        const title = try std.fmt.allocPrint(self.allocator, "TASK: {s} [{s}]", .{ task.title, task.id });
+        defer self.allocator.free(title);
+
+        // Create and render the panel
+        var panel = rich.renderables.Panel.fromText(self.allocator, body_parts.items);
+        panel = panel.withTitle(title).rounded();
+
+        const segments = try panel.render(80, self.allocator);
+        defer self.allocator.free(segments);
+
+        for (segments) |segment| {
+            try w.writeAll(segment.text);
         }
 
         self.flushWriter(&writer);
@@ -195,63 +228,124 @@ pub const UI = struct {
     }
 
     pub fn status(self: *UI, message: []const u8) !void {
+        if (self.quiet) return;
+
         var writer = self.getWriter();
         const timestamp = self.getTimestamp();
-        try writer.interface.print("[{s}] {s}\n", .{ timestamp, message });
+        // Green bold for success status
+        try writer.interface.print("\x1b[1;32m[{s}]\x1b[0m {s}\n", .{ timestamp, message });
         self.flushWriter(&writer);
     }
 
     pub fn statusFmt(self: *UI, comptime fmt: []const u8, args: anytype) !void {
+        if (self.quiet) return;
+
         var writer = self.getWriter();
         const w = &writer.interface;
         const timestamp = self.getTimestamp();
-        try w.print("[{s}] ", .{timestamp});
+        // Green bold for timestamp
+        try w.print("\x1b[1;32m[{s}]\x1b[0m ", .{timestamp});
         try w.print(fmt, args);
         try w.writeAll("\n");
         self.flushWriter(&writer);
     }
 
     pub fn err(self: *UI, message: []const u8) !void {
+        // Errors always shown even in quiet mode
         var writer = self.getWriter();
-        try writer.interface.print("ERROR: {s}\n", .{message});
+        // Red bold for errors
+        try writer.interface.print("\x1b[1;31mERROR:\x1b[0m {s}\n", .{message});
         self.flushWriter(&writer);
     }
 
     pub fn errFmt(self: *UI, comptime fmt: []const u8, args: anytype) !void {
+        // Errors always shown even in quiet mode
         var writer = self.getWriter();
         const w = &writer.interface;
-        try w.writeAll("ERROR: ");
+        // Red bold for errors
+        try w.writeAll("\x1b[1;31mERROR:\x1b[0m ");
         try w.print(fmt, args);
         try w.writeAll("\n");
         self.flushWriter(&writer);
     }
 
-    pub fn info(self: *UI, message: []const u8) !void {
+    pub fn warn(self: *UI, message: []const u8) !void {
+        if (self.quiet) return;
+
         var writer = self.getWriter();
-        try writer.interface.print("{s}\n", .{message});
+        // Yellow bold for warnings
+        try writer.interface.print("\x1b[1;33mWARN:\x1b[0m {s}\n", .{message});
+        self.flushWriter(&writer);
+    }
+
+    pub fn info(self: *UI, message: []const u8) !void {
+        if (self.quiet) return;
+
+        var writer = self.getWriter();
+        // Dim for info
+        try writer.interface.print("\x1b[2m{s}\x1b[0m\n", .{message});
         self.flushWriter(&writer);
     }
 
     pub fn displayAllTasks(self: *UI, tasks: []const Task) !void {
+        if (self.quiet) return;
+
         var writer = self.getWriter();
         const w = &writer.interface;
 
-        try w.writeAll("\n=== All Ready Tasks ===\n\n");
+        try w.writeAll("\n");
+
+        // Create table with columns using builder pattern
+        var table = rich.renderables.Table.init(self.allocator);
+        defer table.deinit();
+
+        _ = table.withColumn(rich.renderables.Column.init("#").withJustify(.center).withStyle(rich.Style.empty.dim()));
+        _ = table.withColumn(rich.renderables.Column.init("ID").withStyle(rich.Style.empty.fg(rich.Color.cyan)));
+        _ = table.withColumn(rich.renderables.Column.init("Title").withStyle(rich.Style.empty.bold()));
+        _ = table.withColumn(rich.renderables.Column.init("Pri").withJustify(.center));
+        _ = table.withColumn(rich.renderables.Column.init("Tags").withStyle(rich.Style.empty.dim()));
 
         for (tasks, 0..) |task, i| {
-            try w.print("{d}. [{s}] {s} (priority: {d})\n", .{
-                i + 1,
-                task.id,
-                task.title,
-                task.priority,
-            });
-            if (task.description) |desc| {
-                const max_len = @min(desc.len, 100);
-                try w.print("   {s}{s}\n", .{
-                    desc[0..max_len],
-                    if (desc.len > 100) "..." else "",
-                });
+            // Build row number
+            const num = std.fmt.allocPrint(self.allocator, "{d}", .{i + 1}) catch continue;
+            defer self.allocator.free(num);
+
+            // Build priority string
+            const pri = std.fmt.allocPrint(self.allocator, "{d}", .{task.priority}) catch continue;
+            defer self.allocator.free(pri);
+
+            // Build tags string
+            var tags_buf: std.ArrayList(u8) = .empty;
+            defer tags_buf.deinit(self.allocator);
+            for (task.tags, 0..) |tag, j| {
+                if (j > 0) tags_buf.appendSlice(self.allocator, ", ") catch {};
+                tags_buf.appendSlice(self.allocator, tag) catch {};
             }
+            const tags_str = tags_buf.toOwnedSlice(self.allocator) catch "";
+            defer if (tags_str.len > 0) self.allocator.free(tags_str);
+
+            // Truncate title if too long
+            const max_title_len: usize = 40;
+            const title_display = if (task.title.len > max_title_len)
+                task.title[0..max_title_len]
+            else
+                task.title;
+
+            table.addRow(&.{ num, task.id, title_display, pri, tags_str }) catch {};
+        }
+
+        _ = table.withBoxStyle(rich.box.BoxStyle.rounded);
+        _ = table.withTitle("All Ready Tasks");
+
+        const segments = table.render(100, self.allocator) catch {
+            try w.writeAll("=== All Ready Tasks ===\n");
+            self.flushWriter(&writer);
+            return;
+        };
+        defer self.allocator.free(segments);
+
+        for (segments) |segment| {
+            try w.writeAll(segment.text);
         }
 
         try w.writeAll("\n");
@@ -261,8 +355,32 @@ pub const UI = struct {
     pub fn displayComplete(self: *UI, tasks_completed: usize) !void {
         var writer = self.getWriter();
         const w = &writer.interface;
-        try w.print("\n=== Session Complete ===\n", .{});
-        try w.print("Tasks completed: {d}\n", .{tasks_completed});
+
+        try w.writeAll("\n");
+
+        // Build body content
+        const body = std.fmt.allocPrint(self.allocator, "[bold green]Tasks completed: {d}[/]", .{tasks_completed}) catch {
+            try w.print("=== Session Complete ===\nTasks completed: {d}\n", .{tasks_completed});
+            self.flushWriter(&writer);
+            return;
+        };
+        defer self.allocator.free(body);
+
+        // Create panel with double border
+        var panel = rich.renderables.Panel.fromText(self.allocator, body);
+        panel = panel.withTitle("Session Complete").double();
+
+        const segments = panel.render(50, self.allocator) catch {
+            try w.print("=== Session Complete ===\nTasks completed: {d}\n", .{tasks_completed});
+            self.flushWriter(&writer);
+            return;
+        };
+        defer self.allocator.free(segments);
+
+        for (segments) |segment| {
+            try w.writeAll(segment.text);
+        }
+
         self.flushWriter(&writer);
     }
 
@@ -346,13 +464,15 @@ pub fn generateOutputFilename(allocator: mem.Allocator, output_dir: []const u8, 
 
 test "UI - init" {
     const allocator = std.testing.allocator;
-    const ui = UI.init(allocator, false);
+    const ui = UI.init(allocator, false, false, false);
     try std.testing.expect(!ui.auto_mode);
+    try std.testing.expect(!ui.verbose);
+    try std.testing.expect(!ui.quiet);
 }
 
 test "UI - auto mode returns defaults" {
     const allocator = std.testing.allocator;
-    var ui = UI.init(allocator, true);
+    var ui = UI.init(allocator, true, false, false);
 
     const exec_choice = try ui.promptExecute();
     try std.testing.expect(exec_choice == .yes);

@@ -21,6 +21,10 @@ pub const Config = struct {
     auto_mode: bool,
     help_requested: bool,
     version_requested: bool,
+    dry_run: bool,
+    verbose: bool,
+    quiet: bool,
+    introspection_enabled: bool,
 
     const OUTPUT_DIR_NAME = ".hot_ralph";
 
@@ -39,6 +43,10 @@ pub const Config = struct {
             .auto_mode = args.auto_mode,
             .help_requested = args.help_requested,
             .version_requested = args.version_requested,
+            .dry_run = args.dry_run,
+            .verbose = args.verbose,
+            .quiet = args.quiet,
+            .introspection_enabled = args.introspection_enabled,
         };
     }
 
@@ -57,6 +65,10 @@ pub const Args = struct {
     auto_mode: bool,
     help_requested: bool,
     version_requested: bool,
+    dry_run: bool,
+    verbose: bool,
+    quiet: bool,
+    introspection_enabled: bool,
 
     pub fn parse(allocator: mem.Allocator) !Args {
         var args_iter = try std.process.argsWithAllocator(allocator);
@@ -69,6 +81,10 @@ pub const Args = struct {
             .auto_mode = false,
             .help_requested = false,
             .version_requested = false,
+            .dry_run = false,
+            .verbose = false,
+            .quiet = false,
+            .introspection_enabled = false,
         };
 
         while (args_iter.next()) |arg| {
@@ -78,6 +94,14 @@ pub const Args = struct {
                 result.version_requested = true;
             } else if (mem.eql(u8, arg, "--auto") or mem.eql(u8, arg, "-a")) {
                 result.auto_mode = true;
+            } else if (mem.eql(u8, arg, "--dry-run")) {
+                result.dry_run = true;
+            } else if (mem.eql(u8, arg, "--verbose") or mem.eql(u8, arg, "-v")) {
+                result.verbose = true;
+            } else if (mem.eql(u8, arg, "--quiet") or mem.eql(u8, arg, "-q")) {
+                result.quiet = true;
+            } else if (mem.eql(u8, arg, "--introspection") or mem.eql(u8, arg, "-i")) {
+                result.introspection_enabled = true;
             } else if (!mem.startsWith(u8, arg, "-")) {
                 result.project_dir = arg;
             }
@@ -163,9 +187,13 @@ pub fn printHelp(writer: anytype) !void {
         \\    PROJECT_DIR    Path to project directory (default: current directory)
         \\
         \\OPTIONS:
-        \\    -a, --auto     Auto mode: skip all prompts, assume yes
-        \\    -h, --help     Show this help message
-        \\    -V, --version  Show version information
+        \\    -a, --auto          Auto mode: skip all prompts, assume yes
+        \\    -h, --help          Show this help message
+        \\    -V, --version       Show version information
+        \\    --dry-run           Preview mode: show what would be done without executing
+        \\    -v, --verbose       Verbose output: stream Claude responses to terminal
+        \\    -q, --quiet         Quiet mode: minimal output
+        \\    -i, --introspection Enable periodic introspection after every 5 tasks
         \\
         \\REQUIREMENTS:
         \\    Project directory must contain:
@@ -191,7 +219,7 @@ pub fn printHelp(writer: anytype) !void {
 }
 
 pub fn printVersion(writer: anytype) !void {
-    try writer.writeAll("ralph 0.1.0\n");
+    try writer.writeAll("ralph 0.2.0\n");
 }
 
 test "Args.parse - default values" {
@@ -203,11 +231,19 @@ test "Args.parse - default values" {
         .auto_mode = false,
         .help_requested = false,
         .version_requested = false,
+        .dry_run = false,
+        .verbose = false,
+        .quiet = false,
+        .introspection_enabled = false,
     };
     try std.testing.expect(args.project_dir == null);
     try std.testing.expect(!args.auto_mode);
     try std.testing.expect(!args.help_requested);
     try std.testing.expect(!args.version_requested);
+    try std.testing.expect(!args.dry_run);
+    try std.testing.expect(!args.verbose);
+    try std.testing.expect(!args.quiet);
+    try std.testing.expect(!args.introspection_enabled);
     _ = allocator;
 }
 
@@ -218,6 +254,10 @@ test "Config.init - with project dir" {
         .auto_mode = true,
         .help_requested = false,
         .version_requested = false,
+        .dry_run = true,
+        .verbose = false,
+        .quiet = true,
+        .introspection_enabled = false,
     };
 
     var config = try Config.init(allocator, args);
@@ -225,5 +265,7 @@ test "Config.init - with project dir" {
 
     try std.testing.expectEqualStrings("/tmp/test", config.project_dir);
     try std.testing.expect(config.auto_mode);
+    try std.testing.expect(config.dry_run);
+    try std.testing.expect(config.quiet);
     try std.testing.expect(mem.endsWith(u8, config.output_dir, ".hot_ralph"));
 }
