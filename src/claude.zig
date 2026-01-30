@@ -247,33 +247,16 @@ pub const StreamParser = struct {
             else => return,
         };
 
-        // Check for message type
-        if (obj.get("type")) |type_val| {
-            if (type_val == .string) {
-                const type_str = type_val.string;
+        const type_str = getStringField(obj, "type") orelse "";
 
-                // Handle content_block_delta
-                if (mem.eql(u8, type_str, "content_block_delta")) {
-                    if (obj.get("delta")) |delta| {
-                        self.extractDelta(delta);
-                    }
-                }
-                // Handle error messages
-                else if (mem.eql(u8, type_str, "error")) {
-                    if (obj.get("error")) |err_obj| {
-                        if (err_obj == .object) {
-                            if (err_obj.object.get("message")) |msg| {
-                                if (msg == .string) {
-                                    self.events.append(self.allocator, .{ .error_msg = msg.string }) catch {};
-                                }
-                            }
-                        }
-                    }
-                }
+        if (mem.eql(u8, type_str, "content_block_delta")) {
+            if (obj.get("delta")) |delta| {
+                self.extractDelta(delta);
             }
+        } else if (mem.eql(u8, type_str, "error")) {
+            self.extractErrorMessage(obj);
         }
 
-        // Handle assistant message content directly
         if (obj.get("content")) |content| {
             if (content == .array) {
                 for (content.array.items) |item| {
@@ -282,12 +265,16 @@ pub const StreamParser = struct {
             }
         }
 
-        // Handle result field (final message)
-        if (obj.get("result")) |result| {
-            if (result == .string) {
-                self.events.append(self.allocator, .{ .text = result.string }) catch {};
-            }
+        if (getStringField(obj, "result")) |result| {
+            self.events.append(self.allocator, .{ .text = result }) catch {};
         }
+    }
+
+    fn extractErrorMessage(self: *StreamParser, obj: json.ObjectMap) void {
+        const err_obj = obj.get("error") orelse return;
+        if (err_obj != .object) return;
+        const msg = getStringField(err_obj.object, "message") orelse return;
+        self.events.append(self.allocator, .{ .error_msg = msg }) catch {};
     }
 
     fn extractDelta(self: *StreamParser, delta: json.Value) void {
@@ -296,20 +283,16 @@ pub const StreamParser = struct {
             else => return,
         };
 
-        if (delta_obj.get("type")) |delta_type| {
-            if (delta_type == .string) {
-                if (mem.eql(u8, delta_type.string, "text_delta")) {
-                    if (delta_obj.get("text")) |text| {
-                        if (text == .string) {
-                            self.events.append(self.allocator, .{ .text = text.string }) catch {};
-                        }
-                    }
-                } else if (mem.eql(u8, delta_type.string, "input_json_delta")) {
-                    self.events.append(self.allocator, .tool_use) catch {};
-                } else if (mem.eql(u8, delta_type.string, "thinking_delta")) {
-                    self.events.append(self.allocator, .thinking) catch {};
-                }
+        const delta_type = getStringField(delta_obj, "type") orelse return;
+
+        if (mem.eql(u8, delta_type, "text_delta")) {
+            if (getStringField(delta_obj, "text")) |text| {
+                self.events.append(self.allocator, .{ .text = text }) catch {};
             }
+        } else if (mem.eql(u8, delta_type, "input_json_delta")) {
+            self.events.append(self.allocator, .tool_use) catch {};
+        } else if (mem.eql(u8, delta_type, "thinking_delta")) {
+            self.events.append(self.allocator, .thinking) catch {};
         }
     }
 
@@ -319,19 +302,19 @@ pub const StreamParser = struct {
             else => return,
         };
 
-        if (block_obj.get("type")) |block_type| {
-            if (block_type == .string) {
-                if (mem.eql(u8, block_type.string, "text")) {
-                    if (block_obj.get("text")) |text| {
-                        if (text == .string) {
-                            self.events.append(self.allocator, .{ .text = text.string }) catch {};
-                        }
-                    }
-                }
-            }
+        const block_type = getStringField(block_obj, "type") orelse return;
+        if (!mem.eql(u8, block_type, "text")) return;
+
+        if (getStringField(block_obj, "text")) |text| {
+            self.events.append(self.allocator, .{ .text = text }) catch {};
         }
     }
 };
+
+fn getStringField(obj: json.ObjectMap, key: []const u8) ?[]const u8 {
+    const val = obj.get(key) orelse return null;
+    return if (val == .string) val.string else null;
+}
 
 test "StreamParser - parse text delta" {
     const allocator = std.testing.allocator;

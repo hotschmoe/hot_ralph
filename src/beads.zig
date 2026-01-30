@@ -117,33 +117,19 @@ pub const Beads = struct {
     }
 
     pub fn readyCount(self: *Beads) !usize {
-        const output = try self.runCommand(&.{ "br", "ready", "--json" });
-        defer self.allocator.free(output);
-
-        const tasks = try parseTaskList(self.allocator, output);
-        defer {
-            for (tasks) |*task| {
-                var t = task.*;
-                t.deinit();
-            }
-            self.allocator.free(tasks);
-        }
-
-        return tasks.len;
+        return self.countTasks(&.{ "br", "ready", "--json" });
     }
 
     pub fn blockedCount(self: *Beads) !usize {
-        const output = try self.runCommand(&.{ "br", "blocked", "--json" });
+        return self.countTasks(&.{ "br", "blocked", "--json" });
+    }
+
+    fn countTasks(self: *Beads, args: []const []const u8) !usize {
+        const output = try self.runCommand(args);
         defer self.allocator.free(output);
 
         const tasks = try parseTaskList(self.allocator, output);
-        defer {
-            for (tasks) |*task| {
-                var t = task.*;
-                t.deinit();
-            }
-            self.allocator.free(tasks);
-        }
+        defer freeTasks(self.allocator, tasks);
 
         return tasks.len;
     }
@@ -159,26 +145,23 @@ pub const Beads = struct {
             return null;
         }
 
-        // Sort by priority (lower is higher priority), then by created_at
-        std.sort.insertion(Task, tasks, {}, struct {
-            fn lessThan(_: void, a: Task, b: Task) bool {
-                if (a.priority != b.priority) {
-                    return a.priority < b.priority;
-                }
-                // If priorities equal, compare created_at (earlier first)
-                const a_created = a.created_at orelse "";
-                const b_created = b.created_at orelse "";
-                return mem.lessThan(u8, a_created, b_created);
-            }
-        }.lessThan);
+        std.sort.insertion(Task, tasks, {}, taskPriorityLessThan);
 
-        // Return the first task (highest priority), free the rest
         const result = tasks[0];
         for (tasks[1..]) |*task| {
             task.deinit();
         }
 
         return result;
+    }
+
+    fn taskPriorityLessThan(_: void, a: Task, b: Task) bool {
+        if (a.priority != b.priority) {
+            return a.priority < b.priority;
+        }
+        const a_created = a.created_at orelse "";
+        const b_created = b.created_at orelse "";
+        return mem.lessThan(u8, a_created, b_created);
     }
 
     pub fn getAllReady(self: *Beads) ![]Task {
@@ -226,6 +209,38 @@ pub const Beads = struct {
         return output;
     }
 };
+
+fn freeTasks(allocator: mem.Allocator, tasks: []Task) void {
+    for (tasks) |*task| {
+        var t = task.*;
+        t.deinit();
+    }
+    allocator.free(tasks);
+}
+
+fn freeStringSlice(allocator: mem.Allocator, slice: []const []const u8) void {
+    for (slice) |s| allocator.free(s);
+    if (slice.len > 0) allocator.free(slice);
+}
+
+fn parseStringArray(allocator: mem.Allocator, maybe_val: ?json.Value) ![]const []const u8 {
+    const val = maybe_val orelse return &.{};
+    if (val != .array) return &.{};
+
+    var list: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (list.items) |item| allocator.free(item);
+        list.deinit(allocator);
+    }
+
+    for (val.array.items) |item| {
+        if (item == .string) {
+            try list.append(allocator, try allocator.dupe(u8, item.string));
+        }
+    }
+
+    return list.toOwnedSlice(allocator);
+}
 
 fn parseTaskList(allocator: mem.Allocator, json_str: []const u8) ![]Task {
     // Handle empty output
@@ -304,53 +319,24 @@ fn parseTask(allocator: mem.Allocator, value: json.Value) !Task {
         };
     }
 
-    var tags: []const []const u8 = &.{};
-    if (obj.get("tags")) |tags_val| {
-        if (tags_val == .array) {
-            var tag_list: std.ArrayList([]const u8) = .empty;
-            errdefer tag_list.deinit(allocator);
-            for (tags_val.array.items) |tag_item| {
-                if (tag_item == .string) {
-                    try tag_list.append(allocator, try allocator.dupe(u8, tag_item.string));
-                }
-            }
-            tags = try tag_list.toOwnedSlice(allocator);
-        }
-    }
-    errdefer {
-        for (tags) |tag| allocator.free(tag);
-        allocator.free(tags);
-    }
+    const tags = try parseStringArray(allocator, obj.get("tags"));
+    errdefer freeStringSlice(allocator, tags);
 
-    var status: TaskStatus = .open;
-    if (obj.get("status")) |status_val| {
-        if (status_val == .string) {
-            status = TaskStatus.fromString(status_val.string) orelse .open;
-        }
-    }
+    const status: TaskStatus = if (obj.get("status")) |status_val|
+        if (status_val == .string) TaskStatus.fromString(status_val.string) orelse .open else .open
+    else
+        .open;
 
-    var created_at: ?[]const u8 = null;
-    if (obj.get("created_at")) |ca_val| {
-        created_at = switch (ca_val) {
+    const created_at: ?[]const u8 = if (obj.get("created_at")) |ca_val|
+        switch (ca_val) {
             .string => |s| try allocator.dupe(u8, s),
             else => null,
-        };
-    }
+        }
+    else
+        null;
     errdefer if (created_at) |ca| allocator.free(ca);
 
-    var blocks: []const []const u8 = &.{};
-    if (obj.get("blocks")) |blocks_val| {
-        if (blocks_val == .array) {
-            var block_list: std.ArrayList([]const u8) = .empty;
-            errdefer block_list.deinit(allocator);
-            for (blocks_val.array.items) |block_item| {
-                if (block_item == .string) {
-                    try block_list.append(allocator, try allocator.dupe(u8, block_item.string));
-                }
-            }
-            blocks = try block_list.toOwnedSlice(allocator);
-        }
-    }
+    const blocks = try parseStringArray(allocator, obj.get("blocks"));
 
     return Task{
         .allocator = allocator,
