@@ -16,6 +16,12 @@ pub fn build(b: *std.Build) void {
     // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall. Here we do not
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
+
+    // External dependencies
+    const rich_zig = b.dependency("rich_zig", .{
+        .target = target,
+        .optimize = optimize,
+    });
     // It's also possible to define more custom flags to toggle optional features
     // of this build script using `b.option()`. All defined flags (including
     // target and optimize options) will be listed when running `zig build --help`
@@ -39,6 +45,9 @@ pub fn build(b: *std.Build) void {
         // Later on we'll use this module as the root module of a test executable
         // which requires us to specify a target.
         .target = target,
+        .imports = &.{
+            .{ .name = "rich_zig", .module = rich_zig.module("rich_zig") },
+        },
     });
 
     // Here we define an executable. An executable needs to have a root module
@@ -79,6 +88,7 @@ pub fn build(b: *std.Build) void {
                 // can be extremely useful in case of collisions (which can happen
                 // importing modules from different packages).
                 .{ .name = "hot_ralph", .module = mod },
+                .{ .name = "rich_zig", .module = rich_zig.module("rich_zig") },
             },
         }),
     });

@@ -53,3 +53,21 @@ test {
     // Run all module tests
     std.testing.refAllDecls(@This());
 }
+
+test "rich_zig integration" {
+    const rich = @import("rich_zig");
+    const allocator = std.testing.allocator;
+
+    // Test basic style creation
+    const style = rich.Style.empty.bold().foreground(rich.Color.red);
+    try std.testing.expect(style.hasAttribute(.bold));
+    try std.testing.expect(style.color != null);
+
+    // Test Text creation from markup
+    var text = try rich.Text.fromMarkup(allocator, "[bold]Hello, rich_zig![/]");
+    defer text.deinit();
+    try std.testing.expectEqualStrings("Hello, rich_zig!", text.plain);
+
+    // Test cell width calculation
+    try std.testing.expectEqual(@as(usize, 5), rich.cells.cellLen("Hello"));
+}
