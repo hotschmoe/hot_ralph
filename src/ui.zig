@@ -398,8 +398,7 @@ pub const UI = struct {
         return buf[0];
     }
 
-    fn getTimestamp(self: *UI) [8]u8 {
-        _ = self;
+    fn getTimestamp(_: *UI) [8]u8 {
         const ts = std.time.timestamp();
         const epoch_seconds: u64 = @intCast(ts);
 

@@ -202,10 +202,13 @@ fn run() !u8 {
         };
 
         // Update state
+        const task_label = try std.fmt.allocPrint(allocator, "task_{s}", .{task.id});
+        defer allocator.free(task_label);
+
         const output_filename = try ralph.ui.generateOutputFilename(
             allocator,
             config.output_dir,
-            try std.fmt.allocPrint(allocator, "task_{s}", .{task.id}),
+            task_label,
         );
         defer allocator.free(output_filename);
 
@@ -371,50 +374,7 @@ fn run() !u8 {
         // Periodic introspection (every 5 tasks when enabled)
         const INTROSPECTION_INTERVAL: u32 = 5;
         if (config.introspection_enabled and state.tasks_since_introspection >= INTROSPECTION_INTERVAL) {
-            try ui.status("Running introspection...");
-
-            // Collect task logs from output directory
-            var task_logs: std.ArrayList([]const u8) = .empty;
-            defer {
-                for (task_logs.items) |log| {
-                    allocator.free(log);
-                }
-                task_logs.deinit(allocator);
-            }
-
-            // Read CLAUDE.md if it exists
-            const claude_md_path = try fs.path.join(allocator, &.{ config.project_dir, "CLAUDE.md" });
-            defer allocator.free(claude_md_path);
-            const claude_md_content: ?[]const u8 = blk: {
-                const file = fs.openFileAbsolute(claude_md_path, .{}) catch break :blk null;
-                defer file.close();
-                break :blk file.readToEndAlloc(allocator, 1024 * 1024) catch null;
-            };
-            defer if (claude_md_content) |c| allocator.free(c);
-
-            const introspection = ralph.IntrospectionPrompt{
-                .task_logs = task_logs.items,
-                .claude_md_content = claude_md_content,
-                .existing_skills = &.{},
-                .existing_agents = &.{},
-            };
-            const intro_text = try introspection.renderToString(allocator);
-            defer allocator.free(intro_text);
-
-            const intro_output = try ralph.ui.generateOutputFilename(allocator, config.output_dir, "introspection");
-            defer allocator.free(intro_output);
-
-            _ = claude.run(intro_text, .{
-                .output_file = intro_output,
-                .stream_to_terminal = config.verbose,
-                .working_dir = config.project_dir,
-            }) catch {
-                try ui.info("Introspection skipped (Claude error)");
-            };
-
-            state.resetTaskCount();
-            try state.save(state_path);
-            try ui.status("Introspection complete.");
+            try runIntrospection(allocator, &config, &claude, &state, state_path, &ui);
         }
 
         // Countdown between tasks (if not in auto mode)
@@ -458,7 +418,7 @@ fn run() !u8 {
 
 fn syncBeadsAndExit(
     beads: *ralph.Beads,
-    state: *ralph.State,
+    _: *ralph.State,
     state_path: []const u8,
     ui: *ralph.UI,
 ) !void {
@@ -467,9 +427,55 @@ fn syncBeadsAndExit(
         try ui.errFmt("Warning: Beads sync failed: {s}", .{@errorName(err)});
     };
 
-    // Clear state
     ralph.State.clear(state_path) catch {};
-    _ = state;
+}
+
+fn runIntrospection(
+    allocator: mem.Allocator,
+    config: *const ralph.Config,
+    claude: *ralph.Claude,
+    state: *ralph.State,
+    state_path: []const u8,
+    ui: *ralph.UI,
+) !void {
+    try ui.status("Running introspection...");
+
+    // Read CLAUDE.md if it exists
+    const claude_md_path = try fs.path.join(allocator, &.{ config.project_dir, "CLAUDE.md" });
+    defer allocator.free(claude_md_path);
+
+    const claude_md_content: ?[]const u8 = blk: {
+        const file = fs.openFileAbsolute(claude_md_path, .{}) catch break :blk null;
+        defer file.close();
+        break :blk file.readToEndAlloc(allocator, 1024 * 1024) catch null;
+    };
+    defer if (claude_md_content) |c| allocator.free(c);
+
+    const introspection = ralph.IntrospectionPrompt{
+        .task_logs = &.{},
+        .claude_md_content = claude_md_content,
+        .existing_skills = &.{},
+        .existing_agents = &.{},
+    };
+
+    const intro_text = try introspection.renderToString(allocator);
+    defer allocator.free(intro_text);
+
+    const intro_output = try ralph.ui.generateOutputFilename(allocator, config.output_dir, "introspection");
+    defer allocator.free(intro_output);
+
+    _ = claude.run(intro_text, .{
+        .output_file = intro_output,
+        .stream_to_terminal = config.verbose,
+        .working_dir = config.project_dir,
+    }) catch {
+        try ui.info("Introspection skipped (Claude error)");
+        return;
+    };
+
+    state.resetTaskCount();
+    try state.save(state_path);
+    try ui.status("Introspection complete.");
 }
 
 test "main module compiles" {

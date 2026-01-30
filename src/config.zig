@@ -223,9 +223,6 @@ pub fn printVersion(writer: anytype) !void {
 }
 
 test "Args.parse - default values" {
-    const allocator = std.testing.allocator;
-    // Note: In actual usage, this would parse real process args
-    // This test verifies the struct defaults
     const args = Args{
         .project_dir = null,
         .auto_mode = false,
@@ -244,7 +241,6 @@ test "Args.parse - default values" {
     try std.testing.expect(!args.verbose);
     try std.testing.expect(!args.quiet);
     try std.testing.expect(!args.introspection_enabled);
-    _ = allocator;
 }
 
 test "Config.init - with project dir" {
