@@ -254,7 +254,7 @@ fn run() !u8 {
         switch (result) {
             .interrupted => {
                 try ui.info("\nInterrupted.");
-                try syncBeadsAndExit(&beads, &state, state_path, &ui);
+                try syncBeadsAndExit(&beads, state_path, &ui);
                 return EXIT_INTERRUPTED;
             },
             .failure => |f| {
@@ -404,7 +404,7 @@ fn run() !u8 {
     }
 
     // Final sync
-    try syncBeadsAndExit(&beads, &state, state_path, &ui);
+    try syncBeadsAndExit(&beads, state_path, &ui);
 
     // Final review (if tasks were completed and not in dry-run mode)
     if (tasks_completed > 0 and !config.dry_run) {
@@ -435,7 +435,6 @@ fn run() !u8 {
 
 fn syncBeadsAndExit(
     beads: *ralph.Beads,
-    _: *ralph.State,
     state_path: []const u8,
     ui: *ralph.UI,
 ) !void {

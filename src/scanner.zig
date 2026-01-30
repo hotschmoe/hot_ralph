@@ -157,17 +157,7 @@ pub const Scanner = struct {
         return buffer;
     }
 
-    /// Frees a list of task log content strings.
-    pub fn freeTaskLogs(self: *Scanner, logs: [][]const u8) void {
-        for (logs) |log| {
-            self.allocator.free(log);
-        }
-        if (logs.len > 0) {
-            self.allocator.free(logs);
-        }
-    }
-
-    /// Frees a list of filenames.
+    /// Frees a list of allocated strings (task logs, filenames, etc).
     pub fn freeStringList(self: *Scanner, list: [][]const u8) void {
         for (list) |item| {
             self.allocator.free(item);
@@ -176,6 +166,9 @@ pub const Scanner = struct {
             self.allocator.free(list);
         }
     }
+
+    /// Alias for freeStringList for API clarity when freeing task logs.
+    pub const freeTaskLogs = freeStringList;
 };
 
 /// Parses timestamp from filename with format YYYYMMDD_HHMMSS_*.

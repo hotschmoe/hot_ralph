@@ -458,12 +458,34 @@ pub fn generateOutputFilename(allocator: mem.Allocator, output_dir: []const u8, 
     const ts = std.time.timestamp();
     const epoch_seconds: u64 = @intCast(ts);
 
+    const date = epochToDate(epoch_seconds);
+    const time = epochToTime(epoch_seconds);
+
+    const filename = try std.fmt.allocPrint(allocator, "{d:0>4}{d:0>2}{d:0>2}_{d:0>2}{d:0>2}{d:0>2}_{s}.md", .{
+        date.year,
+        date.month,
+        date.day,
+        time.hours,
+        time.minutes,
+        time.seconds,
+        label,
+    });
+    defer allocator.free(filename);
+
+    return try std.fs.path.join(allocator, &.{ output_dir, filename });
+}
+
+const Date = struct { year: u32, month: u32, day: u32 };
+const Time = struct { hours: u32, minutes: u32, seconds: u32 };
+
+fn epochToDate(epoch_seconds: u64) Date {
     const days_since_epoch = epoch_seconds / (24 * 60 * 60);
     var year: u32 = 1970;
     var remaining_days = days_since_epoch;
 
     while (true) {
-        const days_in_year: u64 = if (year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)) 366 else 365;
+        const is_leap = (year % 4 == 0) and ((year % 100 != 0) or (year % 400 == 0));
+        const days_in_year: u64 = if (is_leap) 366 else 365;
         if (remaining_days < days_in_year) break;
         remaining_days -= days_in_year;
         year += 1;
@@ -476,25 +498,21 @@ pub fn generateOutputFilename(allocator: mem.Allocator, output_dir: []const u8, 
         remaining_days -= dim;
         month += 1;
     }
-    const day: u32 = @intCast(remaining_days + 1);
 
+    return .{
+        .year = year,
+        .month = month,
+        .day = @intCast(remaining_days + 1),
+    };
+}
+
+fn epochToTime(epoch_seconds: u64) Time {
     const seconds_in_day = epoch_seconds % (24 * 60 * 60);
-    const hours: u32 = @intCast(seconds_in_day / 3600);
-    const minutes: u32 = @intCast((seconds_in_day % 3600) / 60);
-    const seconds: u32 = @intCast(seconds_in_day % 60);
-
-    const filename = try std.fmt.allocPrint(allocator, "{d:0>4}{d:0>2}{d:0>2}_{d:0>2}{d:0>2}{d:0>2}_{s}.md", .{
-        year,
-        month,
-        day,
-        hours,
-        minutes,
-        seconds,
-        label,
-    });
-    defer allocator.free(filename);
-
-    return try std.fs.path.join(allocator, &.{ output_dir, filename });
+    return .{
+        .hours = @intCast(seconds_in_day / 3600),
+        .minutes = @intCast((seconds_in_day % 3600) / 60),
+        .seconds = @intCast(seconds_in_day % 60),
+    };
 }
 
 test "UI - init" {

@@ -51,7 +51,7 @@ pub const ExitMonitor = struct {
         const stdin = fs.File.stdin();
 
         while (self.running.load(.acquire)) {
-            if (self.pollStdin(stdin)) |char| {
+            if (pollStdin(stdin)) |char| {
                 if (char == 'e' or char == 'E') {
                     self.exit_requested.store(true, .release);
                     return;
@@ -62,17 +62,15 @@ pub const ExitMonitor = struct {
             std.Thread.sleep(100 * std.time.ns_per_ms);
         }
     }
-
-    fn pollStdin(self: *ExitMonitor, stdin: fs.File) ?u8 {
-        _ = self;
-
-        if (builtin.os.tag == .windows) {
-            return pollStdinWindows(stdin);
-        } else {
-            return pollStdinPosix(stdin);
-        }
-    }
 };
+
+fn pollStdin(stdin: fs.File) ?u8 {
+    if (builtin.os.tag == .windows) {
+        return pollStdinWindows(stdin);
+    } else {
+        return pollStdinPosix(stdin);
+    }
+}
 
 fn pollStdinWindows(stdin: fs.File) ?u8 {
     // On Windows, check if stdin has data available using WaitForSingleObject

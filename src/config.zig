@@ -157,23 +157,18 @@ fn checkDirExists(allocator: mem.Allocator, base_dir: []const u8, dirname: []con
 }
 
 fn checkCommandExists(allocator: mem.Allocator, command: []const u8, err_val: ConfigError) !void {
-    // On Windows, append .exe if not present and check common locations
-    const cmd = if (@import("builtin").os.tag == .windows and !mem.endsWith(u8, command, ".exe"))
-        try std.fmt.allocPrint(allocator, "{s}.exe", .{command})
-    else
-        try allocator.dupe(u8, command);
-    defer allocator.free(cmd);
+    const builtin = @import("builtin");
+    const which_cmd = if (builtin.os.tag == .windows) "where" else "which";
 
-    // Try to find command in PATH using 'where' on Windows, 'which' on Unix
-    const which_cmd = if (@import("builtin").os.tag == .windows) "where" else "which";
-
-    var child = std.process.Child.init(&.{ which_cmd, cmd }, allocator);
+    var child = std.process.Child.init(&.{ which_cmd, command }, allocator);
     child.stderr_behavior = .Ignore;
     child.stdout_behavior = .Ignore;
 
-    _ = child.spawnAndWait() catch {
+    const result = child.spawnAndWait() catch return err_val;
+
+    if (result.Exited != 0) {
         return err_val;
-    };
+    }
 }
 
 pub fn printHelp(writer: anytype) !void {
