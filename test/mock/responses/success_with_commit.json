@@ -1,0 +1,11 @@
+{
+  "type": "assistant",
+  "message": {
+    "content": [
+      {
+        "type": "text",
+        "text": "I've implemented the feature and committed the changes.\n\n## Changes Made\n\nAdded the requested function to `src/main.zig`.\n\n## Commit\n\n```\ncommit abc1234\nAuthor: Claude <noreply@anthropic.com>\nDate: Thu Jan 30 2025\n\n    feat: add greeting function\n\n    Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n```\n\nTask complete."
+      }
+    ]
+  }
+}

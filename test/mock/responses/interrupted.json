@@ -1,0 +1,11 @@
+{
+  "type": "assistant",
+  "message": {
+    "content": [
+      {
+        "type": "text",
+        "text": "I'm starting to implement the feature. First, let me read the existing code..."
+      }
+    ]
+  }
+}

@@ -1,0 +1,4 @@
+{"id":"test-001","title":"Add greeting function","description":"Add a greet() function to src/main.zig that returns 'Hello'","priority":1,"status":"open","type":"task","tags":["test"],"created_at":"2025-01-30T10:00:00Z"}
+{"id":"test-002","title":"Add farewell function","description":"Add a farewell() function to src/main.zig that returns 'Goodbye'","priority":2,"status":"open","type":"task","tags":["test"],"created_at":"2025-01-30T10:01:00Z"}
+{"id":"test-003","title":"Blocked task example","description":"This task depends on test-001 completing first","priority":1,"status":"open","type":"task","tags":["test","blocked"],"blocked_by":["test-001"],"created_at":"2025-01-30T10:02:00Z"}
+{"id":"test-004","title":"High priority bug","description":"Simulated critical bug for priority ordering tests","priority":0,"status":"open","type":"bug","tags":["test","critical"],"created_at":"2025-01-30T10:03:00Z"}

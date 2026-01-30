@@ -1,0 +1,11 @@
+{
+  "type": "assistant",
+  "message": {
+    "content": [
+      {
+        "type": "text",
+        "text": "I attempted to implement the feature but encountered test failures.\n\n## Changes Attempted\n\nModified `src/main.zig` to add the requested function.\n\n## Test Results\n\n```\ntest \"greeting returns Hello\"... FAILED\nexpected: 'Hello'\nactual: 'hello'\n```\n\nThe test expects exact capitalization. The implementation needs adjustment.\n\nTask NOT complete - tests failing."
+      }
+    ]
+  }
+}
