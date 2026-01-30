@@ -1,4 +1,4 @@
-# ralph Features (Phase 1 CLI)
+# hot_ralph Features (Phase 1 CLI)
 
 ## Features from Bash Script (Port)
 
@@ -163,11 +163,11 @@ Fail fast with actionable error messages.
 
 ### Dry Run Mode
 
-**Problem**: No way to preview what ralph will do.
+**Problem**: No way to preview what hot_ralph will do.
 
 **Solution**: `--dry-run` flag:
 ```bash
-ralph --dry-run /path/to/project
+hot_ralph --dry-run /path/to/project
 ```
 
 Shows:
@@ -209,9 +209,9 @@ Scripts can handle different failure modes appropriately.
 
 **Solution**: Non-blocking input monitoring during task execution:
 - User presses `e` at any time during the loop
-- ralph sets `exit_requested` flag
+- hot_ralph sets `exit_requested` flag
 - Current task completes normally (Claude finishes, simplification runs, commit happens)
-- Before starting next task, ralph checks flag and exits cleanly
+- Before starting next task, hot_ralph checks flag and exits cleanly
 
 ```
 [14:32:15] Executing task abc123...
@@ -247,9 +247,9 @@ Implementation: Spawn input monitoring thread that sets atomic flag on `e` keypr
 - Combined with `-a`: Auto-approve all suggestions
 
 ```bash
-ralph -i              # Introspection enabled, prompt for approval
-ralph -i -a           # Introspection enabled, auto-approve suggestions
-ralph -a              # Auto mode, no introspection
+hot_ralph -i              # Introspection enabled, prompt for approval
+hot_ralph -i -a           # Introspection enabled, auto-approve suggestions
+hot_ralph -a              # Auto mode, no introspection
 ```
 
 **Output**:
@@ -346,7 +346,7 @@ Before Phase 2 (TUI), research and prototype context-saving strategies to reduce
 
 ### Problem
 
-Each ralph loop sends full context to Claude:
+Each hot_ralph loop sends full context to Claude:
 - SPEC.md, VISION.md, TESTING.md (potentially large)
 - Task description
 - Previous conversation context (if resuming)
@@ -380,7 +380,7 @@ Split documents into semantic sections:
 
 Explore Claude's conversation continuation:
 - Can we maintain a session across multiple tasks?
-- How does `--resume` interact with ralph's workflow?
+- How does `--resume` interact with hot_ralph's workflow?
 - Token implications of long vs. fresh sessions
 
 #### 5. Local Context Cache

@@ -1,10 +1,10 @@
-# ralph
+# hot_ralph
 
 A Zig-native development loop tool for atomic task execution with Claude and Beads integration.
 
-## What is ralph?
+## What is hot_ralph?
 
-ralph automates the development workflow of:
+hot_ralph automates the development workflow of:
 1. Pulling the next ready task from your Beads queue
 2. Sending it to Claude with project context
 3. Validating the result
@@ -32,7 +32,7 @@ cd hot_ralph
 zig build -Doptimize=ReleaseSafe
 ```
 
-The binary is at `zig-out/bin/ralph`.
+The binary is at `zig-out/bin/hot_ralph`.
 
 ## Quick Start
 
@@ -45,11 +45,11 @@ br init
 br create "Implement feature X" --type task --description "..."
 br create "Fix bug Y" --type bug --priority 1
 
-# Run ralph
-ralph /path/to/your/project
+# Run hot_ralph
+hot_ralph /path/to/your/project
 
 # Or with auto-mode (no prompts)
-ralph --auto /path/to/your/project
+hot_ralph --auto /path/to/your/project
 ```
 
 ## Project Structure
@@ -63,12 +63,16 @@ Your project needs:
 ## Commands
 
 ```bash
-ralph [OPTIONS] [PROJECT_DIR]
+hot_ralph [OPTIONS] [PROJECT_DIR]
 
 Options:
-  --auto, -a    Auto mode - no user prompts, assume yes
-  --help, -h    Show help message
-  --version     Show version
+  -a, --auto          Auto mode - no user prompts, assume yes
+  -h, --help          Show help message
+  -V, --version       Show version
+  --dry-run           Preview mode - show what would be done
+  -v, --verbose       Stream Claude responses to terminal
+  -q, --quiet         Minimal output (errors only)
+  -i, --introspection Enable periodic introspection every 5 tasks
 
 Arguments:
   PROJECT_DIR   Path to project (default: current directory)
@@ -76,11 +80,11 @@ Arguments:
 
 ## Workflow
 
-1. ralph shows the next ready task from Beads
+1. hot_ralph shows the next ready task from Beads
 2. You confirm execution (or use --auto)
 3. Claude receives the task with project context files
 4. You confirm success, retry, or skip
-5. On success, ralph runs code simplification and commits
+5. On success, hot_ralph runs code simplification and commits
 6. Loop continues until all tasks complete
 
 ## Development
