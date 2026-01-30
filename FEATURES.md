@@ -232,18 +232,30 @@ Implementation: Spawn input monitoring thread that sets atomic flag on `e` keypr
 
 **Problem**: Development patterns emerge over time. CLAUDE.md becomes stale. Opportunities for skills/agents go unnoticed.
 
-**Solution**: Periodic self-improvement pass (20% chance every 5 completed tasks):
+**Solution**: Periodic self-improvement pass every 5 completed tasks:
 
-1. Claude reads last 5-10 task logs from `.hot_ralph/`
+1. Claude reads last 10 task logs from `.hot_ralph/`
 2. Analyzes patterns: repeated operations, common errors, workflow friction
 3. Proposes updates:
    - CLAUDE.md additions (new patterns, gotchas discovered)
    - New skill in `.claude/skills/` (repeated multi-step operations)
    - New agent in `.claude/agents/` (specialized task types)
+4. Writes log to `.hot_ralph/{timestamp}_introspection.md`
 
+**Flags**:
+- `-i` / `--introspection`: Enable introspection (disabled by default)
+- Combined with `-a`: Auto-approve all suggestions
+
+```bash
+ralph -i              # Introspection enabled, prompt for approval
+ralph -i -a           # Introspection enabled, auto-approve suggestions
+ralph -a              # Auto mode, no introspection
 ```
-[15:20:00] Running introspection (5 tasks completed)...
-[15:20:45] Introspection complete.
+
+**Output**:
+```
+[15:20:00] Running introspection (5 tasks completed, reviewing last 10 logs)...
+[15:20:45] Introspection complete. Log: .hot_ralph/20250130_152045_introspection.md
 
 Suggestions:
 1. Add to CLAUDE.md: "Always run zig fmt before commits"
@@ -253,9 +265,51 @@ Suggestions:
 Apply suggestions? [Y/n/review]
 ```
 
-Introspection prompt:
+With `-i -a` (auto mode):
 ```
-Review the last {n} task logs from this development session.
+[15:20:00] Running introspection (5 tasks completed, reviewing last 10 logs)...
+[15:20:45] Introspection complete. Log: .hot_ralph/20250130_152045_introspection.md
+[15:20:45] Auto-applying 2 suggestions...
+[15:20:46] Updated CLAUDE.md
+[15:20:47] Created .claude/skills/fix-imports.md
+```
+
+**Introspection log format** (`.hot_ralph/{timestamp}_introspection.md`):
+```markdown
+# Introspection - 2025-01-30 15:20:45
+
+## Logs Reviewed
+- 20250130_140000_task_abc123.md
+- 20250130_141500_task_def456.md
+- ... (10 total)
+
+## Analysis
+
+### Patterns Observed
+- Import cleanup performed manually 3 times
+- zig fmt mentioned in 4 task completions
+
+### Suggestions
+
+#### 1. CLAUDE.md Update
+**Reason**: zig fmt consistently needed before commits
+**Content**:
+> Always run `zig fmt src/` before committing Zig code changes.
+
+#### 2. New Skill: /fix-imports
+**Reason**: Import cleanup is a repeated 3-step operation
+**File**: .claude/skills/fix-imports.md
+**Content**:
+> [skill content here]
+
+## Applied
+- [ ] CLAUDE.md update (pending approval)
+- [ ] /fix-imports skill (pending approval)
+```
+
+**Introspection prompt**:
+```
+Review the last 10 task logs from this development session.
 
 ## Task Logs
 {concatenated logs}
@@ -282,7 +336,7 @@ For each suggestion, provide:
 Be conservative - only suggest high-value additions.
 ```
 
-State tracking: `.hot_ralph/state.json` includes `tasks_since_introspection` counter.
+**State tracking**: `.hot_ralph/state.json` includes `tasks_since_introspection` counter (resets to 0 after introspection runs).
 
 ---
 
