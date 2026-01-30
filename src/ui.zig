@@ -227,6 +227,42 @@ pub const UI = struct {
         return true;
     }
 
+    pub fn countdownWithExitCheck(self: *UI, seconds: u32, exit_monitor: anytype) !bool {
+        if (self.auto_mode) {
+            return true;
+        }
+
+        var remaining: u32 = seconds;
+        while (remaining > 0) : (remaining -= 1) {
+            // Check for exit request
+            if (exit_monitor.shouldExit()) {
+                var writer = self.getWriter();
+                try writer.interface.writeAll("\r                                                        \r");
+                self.flushWriter(&writer);
+                return false;
+            }
+
+            var writer = self.getWriter();
+            try writer.interface.print("\rNext task in {d} seconds... (press 'e' to exit after current task)", .{remaining});
+            self.flushWriter(&writer);
+
+            std.Thread.sleep(std.time.ns_per_s);
+        }
+
+        // Final check before continuing
+        if (exit_monitor.shouldExit()) {
+            var writer = self.getWriter();
+            try writer.interface.writeAll("\r                                                        \r");
+            self.flushWriter(&writer);
+            return false;
+        }
+
+        var writer = self.getWriter();
+        try writer.interface.writeAll("\r                                                        \r");
+        self.flushWriter(&writer);
+        return true;
+    }
+
     pub fn status(self: *UI, message: []const u8) !void {
         if (self.quiet) return;
 

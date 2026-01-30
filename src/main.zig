@@ -9,6 +9,7 @@ const EXIT_SUCCESS: u8 = 0;
 const EXIT_REQUIREMENTS: u8 = 1;
 const EXIT_BEADS: u8 = 2;
 const EXIT_CLAUDE: u8 = 3;
+const EXIT_GIT: u8 = 4;
 const EXIT_INTERRUPTED: u8 = 130;
 
 pub fn main() u8 {
@@ -102,11 +103,22 @@ fn run() !u8 {
         return EXIT_REQUIREMENTS;
     };
 
+    // Initialize exit monitor for graceful 'e' key exit
+    var exit_monitor = ralph.ExitMonitor.init(allocator);
+    defer exit_monitor.deinit();
+
+    // Start monitoring in background (only when not in auto mode)
+    if (!config.auto_mode) {
+        exit_monitor.start() catch {
+            // Non-fatal: continue without exit monitoring
+        };
+    }
+
     // Main loop
     var tasks_completed: usize = 0;
     var push_probability: u8 = 0;
 
-    while (true) {
+    while (!exit_monitor.shouldExit()) {
         // Get ready count
         const ready_count = beads.readyCount() catch |err| {
             try ui.errFmt("Failed to get ready tasks: {s}", .{@errorName(err)});
@@ -379,11 +391,16 @@ fn run() !u8 {
 
         // Countdown between tasks (if not in auto mode)
         if (!config.auto_mode) {
-            const should_continue = try ui.countdown(5);
+            const should_continue = try ui.countdownWithExitCheck(5, &exit_monitor);
             if (!should_continue) {
                 break;
             }
         }
+    }
+
+    // Check if exit was requested via 'e' key
+    if (exit_monitor.shouldExit()) {
+        try ui.info("\nExit requested. Finishing up...");
     }
 
     // Final sync
@@ -440,6 +457,21 @@ fn runIntrospection(
 ) !void {
     try ui.status("Running introspection...");
 
+    // Initialize scanner
+    var scanner = ralph.Scanner.init(allocator, config.project_dir);
+
+    // Scan for recent task logs
+    const task_logs = scanner.scanTaskLogs(10) catch &.{};
+    defer scanner.freeTaskLogs(@constCast(task_logs));
+
+    // Scan for existing skills
+    const skills = scanner.scanSkills() catch &.{};
+    defer scanner.freeStringList(@constCast(skills));
+
+    // Scan for existing agents
+    const agents = scanner.scanAgents() catch &.{};
+    defer scanner.freeStringList(@constCast(agents));
+
     // Read CLAUDE.md if it exists
     const claude_md_path = try fs.path.join(allocator, &.{ config.project_dir, "CLAUDE.md" });
     defer allocator.free(claude_md_path);
@@ -452,10 +484,10 @@ fn runIntrospection(
     defer if (claude_md_content) |c| allocator.free(c);
 
     const introspection = ralph.IntrospectionPrompt{
-        .task_logs = &.{},
+        .task_logs = task_logs,
         .claude_md_content = claude_md_content,
-        .existing_skills = &.{},
-        .existing_agents = &.{},
+        .existing_skills = skills,
+        .existing_agents = agents,
     };
 
     const intro_text = try introspection.renderToString(allocator);

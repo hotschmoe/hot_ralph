@@ -12,6 +12,8 @@ pub const ui = @import("ui.zig");
 pub const beads = @import("beads.zig");
 pub const claude = @import("claude.zig");
 pub const git = @import("git.zig");
+pub const scanner = @import("scanner.zig");
+pub const exit_monitor = @import("exit_monitor.zig");
 
 // Re-export commonly used types
 pub const Config = config.Config;
@@ -35,6 +37,9 @@ pub const StreamParser = claude.StreamParser;
 
 pub const Git = git.Git;
 pub const GitError = git.GitError;
+
+pub const Scanner = scanner.Scanner;
+pub const ExitMonitor = exit_monitor.ExitMonitor;
 
 pub const UI = ui.UI;
 pub const ExecuteChoice = ui.ExecuteChoice;

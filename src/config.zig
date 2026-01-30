@@ -213,6 +213,7 @@ pub fn printHelp(writer: anytype) !void {
         \\    1    Error - missing requirements
         \\    2    Error - Beads operation failed
         \\    3    Error - Claude operation failed
+        \\    4    Error - Git operation failed
         \\    130  Interrupted (Ctrl+C)
         \\
     );
