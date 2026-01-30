@@ -40,8 +40,8 @@ jobs:
       - name: Run Tests
         run: zig build test -Doptimize=${{ matrix.optimize }}
 
-      - name: Run Executable
-        run: zig build run -Doptimize=${{ matrix.optimize }}
+      - name: Verify Executable
+        run: zig build run -Doptimize=${{ matrix.optimize }} -- --help
 
   fuzz:
     name: Fuzz Tests
