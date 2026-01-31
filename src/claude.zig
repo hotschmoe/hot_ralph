@@ -259,23 +259,49 @@ pub const Claude = struct {
             writer.interface.flush() catch {};
         }
 
-        if (result.Exited != 0) {
-            // Check if it was interrupted (signal 130)
-            if (result.Exited == 130 or result.Signal == std.posix.SIG.INT) {
-                return .interrupted;
-            }
-
-            const exit_msg = try std.fmt.allocPrint(
-                self.allocator,
-                "Claude exited with code {d}",
-                .{result.Exited},
-            );
-            return RunResult{
-                .failure = .{
-                    .message = exit_msg,
-                    .error_type = classifyError(exit_msg),
-                },
-            };
+        switch (result) {
+            .Exited => |code| {
+                if (code == 130) {
+                    return .interrupted;
+                }
+                if (code != 0) {
+                    const exit_msg = try std.fmt.allocPrint(
+                        self.allocator,
+                        "Claude exited with code {d}",
+                        .{code},
+                    );
+                    return RunResult{
+                        .failure = .{
+                            .message = exit_msg,
+                            .error_type = classifyError(exit_msg),
+                        },
+                    };
+                }
+            },
+            .Signal => |sig| {
+                if (sig == std.posix.SIG.INT or sig == std.posix.SIG.TERM) {
+                    return .interrupted;
+                }
+                const exit_msg = try std.fmt.allocPrint(
+                    self.allocator,
+                    "Claude terminated by signal {d}",
+                    .{sig},
+                );
+                return RunResult{
+                    .failure = .{
+                        .message = exit_msg,
+                        .error_type = .unknown,
+                    },
+                };
+            },
+            .Stopped, .Unknown => {
+                return RunResult{
+                    .failure = .{
+                        .message = "Claude process stopped or unknown termination",
+                        .error_type = .unknown,
+                    },
+                };
+            },
         }
 
         return RunResult{
