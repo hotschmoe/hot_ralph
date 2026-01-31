@@ -22,7 +22,7 @@ pub const Config = struct {
     help_requested: bool,
     version_requested: bool,
     dry_run: bool,
-    verbose: bool,
+    silent: bool,
     quiet: bool,
     introspection_enabled: bool,
     plan_mode: bool,
@@ -45,7 +45,7 @@ pub const Config = struct {
             .help_requested = args.help_requested,
             .version_requested = args.version_requested,
             .dry_run = args.dry_run,
-            .verbose = args.verbose,
+            .silent = args.silent,
             .quiet = args.quiet,
             .introspection_enabled = args.introspection_enabled,
             .plan_mode = args.plan_mode,
@@ -68,7 +68,7 @@ pub const Args = struct {
     help_requested: bool,
     version_requested: bool,
     dry_run: bool,
-    verbose: bool,
+    silent: bool,
     quiet: bool,
     introspection_enabled: bool,
     plan_mode: bool,
@@ -85,7 +85,7 @@ pub const Args = struct {
             .help_requested = false,
             .version_requested = false,
             .dry_run = false,
-            .verbose = false,
+            .silent = false,
             .quiet = false,
             .introspection_enabled = false,
             .plan_mode = false,
@@ -100,8 +100,8 @@ pub const Args = struct {
                 result.auto_mode = true;
             } else if (mem.eql(u8, arg, "--dry-run")) {
                 result.dry_run = true;
-            } else if (mem.eql(u8, arg, "--verbose") or mem.eql(u8, arg, "-v")) {
-                result.verbose = true;
+            } else if (mem.eql(u8, arg, "--silent") or mem.eql(u8, arg, "-s")) {
+                result.silent = true;
             } else if (mem.eql(u8, arg, "--quiet") or mem.eql(u8, arg, "-q")) {
                 result.quiet = true;
             } else if (mem.eql(u8, arg, "--introspection") or mem.eql(u8, arg, "-i")) {
@@ -192,7 +192,7 @@ pub fn printHelp(writer: anytype) !void {
         \\    -h, --help          Show this help message
         \\    -V, --version       Show version information
         \\    --dry-run           Preview mode: show what would be done without executing
-        \\    -v, --verbose       Verbose output: stream Claude responses to terminal
+        \\    -s, --silent        Silent mode: don't stream Claude responses to terminal
         \\    -q, --quiet         Quiet mode: minimal output
         \\    -i, --introspection Enable periodic introspection after every 5 tasks
         \\    -p, --planmode      Plan mode: batch 5-10 related tasks into single session
@@ -227,7 +227,7 @@ pub fn printHelp(writer: anytype) !void {
 }
 
 pub fn printVersion(writer: anytype) !void {
-    try writer.writeAll("hot_ralph 0.3.0\n");
+    try writer.writeAll("hot_ralph 0.4.0\n");
 }
 
 test "Args.parse - default values" {
@@ -237,7 +237,7 @@ test "Args.parse - default values" {
         .help_requested = false,
         .version_requested = false,
         .dry_run = false,
-        .verbose = false,
+        .silent = false,
         .quiet = false,
         .introspection_enabled = false,
         .plan_mode = false,
@@ -247,7 +247,7 @@ test "Args.parse - default values" {
     try std.testing.expect(!args.help_requested);
     try std.testing.expect(!args.version_requested);
     try std.testing.expect(!args.dry_run);
-    try std.testing.expect(!args.verbose);
+    try std.testing.expect(!args.silent);
     try std.testing.expect(!args.quiet);
     try std.testing.expect(!args.introspection_enabled);
     try std.testing.expect(!args.plan_mode);
@@ -261,7 +261,7 @@ test "Config.init - with project dir" {
         .help_requested = false,
         .version_requested = false,
         .dry_run = true,
-        .verbose = false,
+        .silent = false,
         .quiet = true,
         .introspection_enabled = false,
         .plan_mode = false,

@@ -123,7 +123,7 @@ fn run() !u8 {
     defer config.deinit();
 
     // Initialize UI
-    var ui = ralph.UI.init(allocator, config.auto_mode, config.verbose, config.quiet);
+    var ui = ralph.UI.init(allocator, config.auto_mode, !config.silent, config.quiet);
 
     // Check requirements
     ralph.config.checkRequirements(&config) catch |err| {
@@ -328,7 +328,7 @@ fn run() !u8 {
         // Run Claude with retry logic for transient errors
         const result = try runClaudeWithRetry(allocator, &claude, prompt_text, .{
             .output_file = output_filename,
-            .stream_to_terminal = config.verbose,
+            .stream_to_terminal = !config.silent,
             .working_dir = config.project_dir,
         }, &ui);
 
@@ -424,7 +424,7 @@ fn run() !u8 {
 
             const simplify_result = claude.run(simplify_text, .{
                 .output_file = simplify_output,
-                .stream_to_terminal = config.verbose,
+                .stream_to_terminal = !config.silent,
                 .working_dir = config.project_dir,
             }) catch {
                 try ui.info("Simplification pass skipped (Claude error)");
@@ -513,7 +513,7 @@ fn run() !u8 {
 
         _ = claude.run(review_text, .{
             .output_file = review_output,
-            .stream_to_terminal = config.verbose,
+            .stream_to_terminal = !config.silent,
             .working_dir = config.project_dir,
         }) catch {
             try ui.info("Final review skipped (Claude error)");
@@ -693,7 +693,7 @@ fn runPlanMode(
     // Run Claude with retry logic
     const result = try runClaudeWithRetry(allocator, claude, prompt_text, .{
         .output_file = output_filename,
-        .stream_to_terminal = config.verbose,
+        .stream_to_terminal = !config.silent,
         .working_dir = config.project_dir,
     }, ui);
 
@@ -764,7 +764,7 @@ fn runPlanMode(
 
     _ = claude.run(simplify_text, .{
         .output_file = simplify_output,
-        .stream_to_terminal = config.verbose,
+        .stream_to_terminal = !config.silent,
         .working_dir = config.project_dir,
     }) catch {
         try ui.info("Simplification pass skipped (Claude error)");
@@ -866,7 +866,7 @@ fn runIntrospection(
 
     _ = claude.run(intro_text, .{
         .output_file = intro_output,
-        .stream_to_terminal = config.verbose,
+        .stream_to_terminal = !config.silent,
         .working_dir = config.project_dir,
     }) catch {
         try ui.info("Introspection skipped (Claude error)");

@@ -46,6 +46,20 @@ pub const UI = struct {
         };
     }
 
+    fn writeSegments(w: anytype, segments: []const rich.Segment) !void {
+        for (segments) |segment| {
+            if (segment.control) |ctrl| {
+                try ctrl.toEscapeSequence(w);
+            } else if (segment.style) |style| {
+                try style.renderAnsi(.truecolor, w);
+                try w.writeAll(segment.text);
+                try rich.Style.renderReset(w);
+            } else {
+                try w.writeAll(segment.text);
+            }
+        }
+    }
+
     fn getWriter(self: *UI) fs.File.Writer {
         return self.stdout.writer(&self.stdout_buf);
     }
@@ -117,9 +131,7 @@ pub const UI = struct {
         const segments = try panel.render(80, self.allocator);
         defer self.allocator.free(segments);
 
-        for (segments) |segment| {
-            try w.writeAll(segment.text);
-        }
+        try writeSegments(w, segments);
 
         self.flushWriter(&writer);
     }
@@ -348,21 +360,32 @@ pub const UI = struct {
         _ = table.withColumn(rich.renderables.Column.init("Pri").withJustify(.center));
         _ = table.withColumn(rich.renderables.Column.init("Tags").withStyle(rich.Style.empty.dim()));
 
+        // Collect all allocated strings to free after render
+        var allocated_strings: std.ArrayList([]const u8) = .empty;
+        defer {
+            for (allocated_strings.items) |s| {
+                self.allocator.free(s);
+            }
+            allocated_strings.deinit(self.allocator);
+        }
+
         for (tasks, 0..) |task, i| {
             const num = std.fmt.allocPrint(self.allocator, "{d}", .{i + 1}) catch continue;
-            defer self.allocator.free(num);
+            allocated_strings.append(self.allocator, num) catch continue;
 
             const pri = std.fmt.allocPrint(self.allocator, "{d}", .{task.priority}) catch continue;
-            defer self.allocator.free(pri);
+            allocated_strings.append(self.allocator, pri) catch continue;
 
             var tags_buf: std.ArrayList(u8) = .empty;
-            defer tags_buf.deinit(self.allocator);
             for (task.tags, 0..) |tag, j| {
                 if (j > 0) tags_buf.appendSlice(self.allocator, ", ") catch {};
                 tags_buf.appendSlice(self.allocator, tag) catch {};
             }
             const tags_str = tags_buf.toOwnedSlice(self.allocator) catch "";
-            defer if (tags_str.len > 0) self.allocator.free(tags_str);
+            if (tags_str.len > 0) {
+                allocated_strings.append(self.allocator, tags_str) catch {};
+            }
+            tags_buf.deinit(self.allocator);
 
             const max_title_len: usize = 45;
             const title_display = if (task.title.len > max_title_len)
@@ -386,9 +409,7 @@ pub const UI = struct {
         };
         defer self.allocator.free(segments);
 
-        for (segments) |segment| {
-            try w.writeAll(segment.text);
-        }
+        try writeSegments(w, segments);
 
         if (show_total) |total| {
             try w.print("\nTotal tasks in plan: {d}\n", .{total});
@@ -421,7 +442,7 @@ pub const UI = struct {
 
         try w.writeAll("\n");
 
-        // Build body content
+        // Build body content with markup
         const body = std.fmt.allocPrint(self.allocator, "[bold green]Tasks completed: {d}[/]", .{tasks_completed}) catch {
             try w.print("=== Session Complete ===\nTasks completed: {d}\n", .{tasks_completed});
             self.flushWriter(&writer);
@@ -440,9 +461,7 @@ pub const UI = struct {
         };
         defer self.allocator.free(segments);
 
-        for (segments) |segment| {
-            try w.writeAll(segment.text);
-        }
+        try writeSegments(w, segments);
 
         self.flushWriter(&writer);
     }

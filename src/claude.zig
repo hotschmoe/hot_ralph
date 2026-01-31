@@ -211,6 +211,7 @@ pub const Claude = struct {
             while (parser.next()) |event| {
                 switch (event) {
                     .text => |text| {
+                        defer self.allocator.free(text);
                         try response_buffer.appendSlice(self.allocator, text);
                         if (terminal_writer_opt) |*writer| {
                             writer.interface.writeAll(text) catch {};
@@ -220,11 +221,11 @@ pub const Claude = struct {
                     .tool_use => {},
                     .thinking => {},
                     .error_msg => |msg| {
-                        const duped_msg = try self.allocator.dupe(u8, msg);
+                        // msg is already owned, pass ownership to result
                         return RunResult{
                             .failure = .{
-                                .message = duped_msg,
-                                .error_type = classifyError(duped_msg),
+                                .message = msg,
+                                .error_type = classifyError(msg),
                             },
                         };
                     },
@@ -292,6 +293,14 @@ pub const StreamParser = struct {
     }
 
     pub fn deinit(self: *StreamParser) void {
+        // Free any remaining events with owned strings
+        for (self.events.items) |event| {
+            switch (event) {
+                .text => |t| self.allocator.free(t),
+                .error_msg => |m| self.allocator.free(m),
+                else => {},
+            }
+        }
         self.buffer.deinit(self.allocator);
         self.events.deinit(self.allocator);
     }
@@ -336,10 +345,10 @@ pub const StreamParser = struct {
         };
         defer parsed.deinit();
 
-        self.extractEvents(parsed.value);
+        self.extractEvents(parsed.value, true);
     }
 
-    fn extractEvents(self: *StreamParser, value: json.Value) void {
+    fn extractEvents(self: *StreamParser, value: json.Value, dupe_strings: bool) void {
         const obj = switch (value) {
             .object => |o| o,
             else => return,
@@ -349,33 +358,35 @@ pub const StreamParser = struct {
 
         if (mem.eql(u8, type_str, "content_block_delta")) {
             if (obj.get("delta")) |delta| {
-                self.extractDelta(delta);
+                self.extractDelta(delta, dupe_strings);
             }
         } else if (mem.eql(u8, type_str, "error")) {
-            self.extractErrorMessage(obj);
+            self.extractErrorMessage(obj, dupe_strings);
         }
 
         if (obj.get("content")) |content| {
             if (content == .array) {
                 for (content.array.items) |item| {
-                    self.extractContentBlock(item);
+                    self.extractContentBlock(item, dupe_strings);
                 }
             }
         }
 
         if (getStringField(obj, "result")) |result| {
-            self.events.append(self.allocator, .{ .text = result }) catch {};
+            const text = if (dupe_strings) self.allocator.dupe(u8, result) catch return else result;
+            self.events.append(self.allocator, .{ .text = text }) catch {};
         }
     }
 
-    fn extractErrorMessage(self: *StreamParser, obj: json.ObjectMap) void {
+    fn extractErrorMessage(self: *StreamParser, obj: json.ObjectMap, dupe_strings: bool) void {
         const err_obj = obj.get("error") orelse return;
         if (err_obj != .object) return;
         const msg = getStringField(err_obj.object, "message") orelse return;
-        self.events.append(self.allocator, .{ .error_msg = msg }) catch {};
+        const text = if (dupe_strings) self.allocator.dupe(u8, msg) catch return else msg;
+        self.events.append(self.allocator, .{ .error_msg = text }) catch {};
     }
 
-    fn extractDelta(self: *StreamParser, delta: json.Value) void {
+    fn extractDelta(self: *StreamParser, delta: json.Value, dupe_strings: bool) void {
         const delta_obj = switch (delta) {
             .object => |o| o,
             else => return,
@@ -384,7 +395,8 @@ pub const StreamParser = struct {
         const delta_type = getStringField(delta_obj, "type") orelse return;
 
         if (mem.eql(u8, delta_type, "text_delta")) {
-            if (getStringField(delta_obj, "text")) |text| {
+            if (getStringField(delta_obj, "text")) |t| {
+                const text = if (dupe_strings) self.allocator.dupe(u8, t) catch return else t;
                 self.events.append(self.allocator, .{ .text = text }) catch {};
             }
         } else if (mem.eql(u8, delta_type, "input_json_delta")) {
@@ -394,7 +406,7 @@ pub const StreamParser = struct {
         }
     }
 
-    fn extractContentBlock(self: *StreamParser, block: json.Value) void {
+    fn extractContentBlock(self: *StreamParser, block: json.Value, dupe_strings: bool) void {
         const block_obj = switch (block) {
             .object => |o| o,
             else => return,
@@ -403,7 +415,8 @@ pub const StreamParser = struct {
         const block_type = getStringField(block_obj, "type") orelse return;
         if (!mem.eql(u8, block_type, "text")) return;
 
-        if (getStringField(block_obj, "text")) |text| {
+        if (getStringField(block_obj, "text")) |t| {
+            const text = if (dupe_strings) self.allocator.dupe(u8, t) catch return else t;
             self.events.append(self.allocator, .{ .text = text }) catch {};
         }
     }
@@ -429,9 +442,13 @@ test "StreamParser - parse text delta" {
 
     const event = parser.next();
     try std.testing.expect(event != null);
-    try std.testing.expect(event.? == .text);
-    // Note: text content points to freed JSON memory after parseLine completes
-    // Full content testing would require copying strings in the parser
+    switch (event.?) {
+        .text => |t| {
+            try std.testing.expectEqualStrings("Hello", t);
+            allocator.free(t);
+        },
+        else => try std.testing.expect(false),
+    }
 }
 
 test "StreamParser - parse multiple events" {
@@ -450,11 +467,23 @@ test "StreamParser - parse multiple events" {
 
     const event1 = parser.next();
     try std.testing.expect(event1 != null);
-    try std.testing.expect(event1.? == .text);
+    switch (event1.?) {
+        .text => |t| {
+            try std.testing.expectEqualStrings("Hello", t);
+            allocator.free(t);
+        },
+        else => try std.testing.expect(false),
+    }
 
     const event2 = parser.next();
     try std.testing.expect(event2 != null);
-    try std.testing.expect(event2.? == .text);
+    switch (event2.?) {
+        .text => |t| {
+            try std.testing.expectEqualStrings(" World", t);
+            allocator.free(t);
+        },
+        else => try std.testing.expect(false),
+    }
 
     const event3 = parser.next();
     try std.testing.expect(event3 == null);
