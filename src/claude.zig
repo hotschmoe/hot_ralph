@@ -226,10 +226,7 @@ pub const Claude = struct {
                         }
                     },
                     .tool_use => {
-                        if (terminal_writer_opt) |*writer| {
-                            writer.interface.writeAll("[tool use]\n") catch {};
-                            writer.interface.flush() catch {};
-                        }
+                        // Silently ignore - matches original bash behavior
                     },
                     .thinking => {
                         if (terminal_writer_opt) |*writer| {
