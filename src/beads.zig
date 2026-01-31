@@ -287,20 +287,19 @@ pub const Beads = struct {
 
 fn freeTasks(allocator: mem.Allocator, tasks: []Task) void {
     for (tasks) |*task| {
-        var t = task.*;
-        t.deinit();
+        task.deinit();
     }
     allocator.free(tasks);
 }
 
 fn freeStringSlice(allocator: mem.Allocator, slice: []const []const u8) void {
     for (slice) |s| allocator.free(s);
-    if (slice.len > 0) allocator.free(slice);
+    allocator.free(slice);
 }
 
 fn parseStringArray(allocator: mem.Allocator, maybe_val: ?json.Value) ![]const []const u8 {
-    const val = maybe_val orelse return &.{};
-    if (val != .array) return &.{};
+    const val = maybe_val orelse return try allocator.alloc([]const u8, 0);
+    if (val != .array) return try allocator.alloc([]const u8, 0);
 
     var list: std.ArrayList([]const u8) = .empty;
     errdefer {
@@ -483,6 +482,8 @@ test "Task - clone" {
     var tags = try allocator.alloc([]const u8, 1);
     tags[0] = try allocator.dupe(u8, "test");
 
+    const blocks = try allocator.alloc([]const u8, 0);
+
     var original = Task{
         .allocator = allocator,
         .id = try allocator.dupe(u8, "orig123"),
@@ -492,7 +493,7 @@ test "Task - clone" {
         .tags = tags,
         .status = .open,
         .created_at = null,
-        .blocks = &.{},
+        .blocks = blocks,
     };
     defer original.deinit();
 

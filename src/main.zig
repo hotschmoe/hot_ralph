@@ -340,9 +340,8 @@ fn run() !u8 {
                 return EXIT_INTERRUPTED;
             },
             .failure => |f| {
-                // Check if this is a fatal error that should exit
+                defer allocator.free(f.message);
                 if (f.error_type != .unknown) {
-                    allocator.free(f.message);
                     return handleFatalClaudeError(
                         allocator,
                         &config,
@@ -353,9 +352,7 @@ fn run() !u8 {
                         f.message,
                     );
                 }
-                // Non-fatal unknown errors continue
                 try ui.errFmt("Claude failed: {s}", .{f.message});
-                allocator.free(f.message);
                 state.phase = .idle;
                 try state.save(state_path);
                 continue;
@@ -423,28 +420,15 @@ fn run() !u8 {
             };
             defer allocator.free(simplify_output);
 
-            const simplify_result = claude.run(simplify_text, .{
+            if (claude.run(simplify_text, .{
                 .output_file = simplify_output,
                 .stream_to_terminal = !config.silent,
                 .working_dir = config.project_dir,
-            }) catch {
+            })) |simplify_result| {
+                freeRunResult(allocator, simplify_result);
+                try ui.status("Simplification complete.");
+            } else |_| {
                 try ui.info("Simplification pass skipped (Claude error)");
-                state.phase = .idle;
-                break :simplify;
-            };
-
-            switch (simplify_result) {
-                .success => |s| {
-                    allocator.free(s.response_text);
-                    try ui.status("Simplification complete.");
-                },
-                .failure => |f| {
-                    allocator.free(f.message);
-                    try ui.info("Simplification pass completed with warnings.");
-                },
-                .interrupted => {
-                    try ui.info("Simplification interrupted.");
-                },
             }
             state.phase = .idle;
         }
@@ -513,17 +497,16 @@ fn run() !u8 {
         const review_output = try ralph.ui.generateOutputFilename(allocator, config.output_dir, "final_review");
         defer allocator.free(review_output);
 
-        const review_result = claude.run(review_text, .{
+        if (claude.run(review_text, .{
             .output_file = review_output,
             .stream_to_terminal = !config.silent,
             .working_dir = config.project_dir,
-        }) catch {
+        })) |review_result| {
+            freeRunResult(allocator, review_result);
+            try ui.status("Final review complete.");
+        } else |_| {
             try ui.info("Final review skipped (Claude error)");
-            break :review;
-        };
-        freeRunResult(allocator, review_result);
-
-        try ui.status("Final review complete.");
+        }
     }
 
     // Display summary
@@ -717,8 +700,9 @@ fn runPlanMode(
             return EXIT_INTERRUPTED;
         },
         .failure => |f| {
+            defer allocator.free(f.message);
             if (f.error_type != .unknown) {
-                const exit_code = handleFatalClaudeError(
+                return handleFatalClaudeError(
                     allocator,
                     config,
                     beads,
@@ -727,11 +711,8 @@ fn runPlanMode(
                     f.error_type,
                     f.message,
                 );
-                allocator.free(f.message);
-                return exit_code;
             }
             try ui.errFmt("Plan execution failed: {s}", .{f.message});
-            allocator.free(f.message);
             state.clearPlanMode();
             try state.save(state_path);
             return EXIT_CLAUDE;
