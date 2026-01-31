@@ -68,6 +68,42 @@ pub const UI = struct {
         writer.interface.flush() catch {};
     }
 
+    const BorderStyle = enum { rounded, double };
+
+    fn renderStyledPanel(
+        self: *UI,
+        w: anytype,
+        body: []const u8,
+        title: []const u8,
+        border: BorderStyle,
+        width: usize,
+    ) !void {
+        var styled_text = rich.Text.fromMarkup(self.allocator, body) catch {
+            var panel = rich.renderables.Panel.fromText(self.allocator, body);
+            panel = panel.withTitle(title);
+            panel = switch (border) {
+                .rounded => panel.rounded(),
+                .double => panel.double(),
+            };
+            const segments = try panel.render(width, self.allocator);
+            defer self.allocator.free(segments);
+            try writeSegments(w, segments);
+            return;
+        };
+        defer styled_text.deinit();
+
+        var panel = rich.renderables.Panel.fromStyledText(self.allocator, styled_text);
+        panel = panel.withTitle(title);
+        panel = switch (border) {
+            .rounded => panel.rounded(),
+            .double => panel.double(),
+        };
+
+        const segments = try panel.render(width, self.allocator);
+        defer self.allocator.free(segments);
+        try writeSegments(w, segments);
+    }
+
     pub fn displayTask(self: *UI, task: Task, ready_count: usize, blocked_count: usize) !void {
         if (self.quiet) return;
 
@@ -124,27 +160,7 @@ pub const UI = struct {
         const title = try std.fmt.allocPrint(self.allocator, "TASK: {s} [{s}]", .{ task.title, task.id });
         defer self.allocator.free(title);
 
-        // Create styled text from markup and render the panel
-        var styled_text = rich.Text.fromMarkup(self.allocator, body_parts.items) catch {
-            // Fallback to plain text if markup parsing fails
-            var panel = rich.renderables.Panel.fromText(self.allocator, body_parts.items);
-            panel = panel.withTitle(title).rounded();
-            const segments = try panel.render(80, self.allocator);
-            defer self.allocator.free(segments);
-            try writeSegments(w, segments);
-            self.flushWriter(&writer);
-            return;
-        };
-        defer styled_text.deinit();
-
-        var panel = rich.renderables.Panel.fromStyledText(self.allocator, styled_text);
-        panel = panel.withTitle(title).rounded();
-
-        const segments = try panel.render(80, self.allocator);
-        defer self.allocator.free(segments);
-
-        try writeSegments(w, segments);
-
+        try self.renderStyledPanel(w, body_parts.items, title, .rounded, 80);
         self.flushWriter(&writer);
     }
 
@@ -454,7 +470,6 @@ pub const UI = struct {
 
         try w.writeAll("\n");
 
-        // Build body content with markup
         const body = std.fmt.allocPrint(self.allocator, "[bold green]Tasks completed: {d}[/]", .{tasks_completed}) catch {
             try w.print("=== Session Complete ===\nTasks completed: {d}\n", .{tasks_completed});
             self.flushWriter(&writer);
@@ -462,35 +477,7 @@ pub const UI = struct {
         };
         defer self.allocator.free(body);
 
-        // Parse markup and create panel with styled text
-        var styled_text = rich.Text.fromMarkup(self.allocator, body) catch {
-            // Fallback to plain text if markup parsing fails
-            var panel = rich.renderables.Panel.fromText(self.allocator, body);
-            panel = panel.withTitle("Session Complete").double();
-            const segments = panel.render(50, self.allocator) catch {
-                try w.print("=== Session Complete ===\nTasks completed: {d}\n", .{tasks_completed});
-                self.flushWriter(&writer);
-                return;
-            };
-            defer self.allocator.free(segments);
-            try writeSegments(w, segments);
-            self.flushWriter(&writer);
-            return;
-        };
-        defer styled_text.deinit();
-
-        var panel = rich.renderables.Panel.fromStyledText(self.allocator, styled_text);
-        panel = panel.withTitle("Session Complete").double();
-
-        const segments = panel.render(50, self.allocator) catch {
-            try w.print("=== Session Complete ===\nTasks completed: {d}\n", .{tasks_completed});
-            self.flushWriter(&writer);
-            return;
-        };
-        defer self.allocator.free(segments);
-
-        try writeSegments(w, segments);
-
+        try self.renderStyledPanel(w, body, "Session Complete", .double, 50);
         self.flushWriter(&writer);
     }
 
