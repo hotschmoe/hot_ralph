@@ -503,7 +503,8 @@ fn run() !u8 {
     try syncBeadsAndExit(&beads, state_path, &ui);
 
     // Final review (if tasks were completed and not in dry-run mode)
-    if (tasks_completed > 0 and !config.dry_run) {
+    review: {
+        if (tasks_completed == 0 or config.dry_run) break :review;
         try ui.status("Running final review...");
 
         const review_text = try ralph.FinalReviewPrompt.renderToString(allocator);
@@ -512,13 +513,15 @@ fn run() !u8 {
         const review_output = try ralph.ui.generateOutputFilename(allocator, config.output_dir, "final_review");
         defer allocator.free(review_output);
 
-        _ = claude.run(review_text, .{
+        const review_result = claude.run(review_text, .{
             .output_file = review_output,
             .stream_to_terminal = !config.silent,
             .working_dir = config.project_dir,
         }) catch {
             try ui.info("Final review skipped (Claude error)");
+            break :review;
         };
+        freeRunResult(allocator, review_result);
 
         try ui.status("Final review complete.");
     }
@@ -575,6 +578,14 @@ fn runClaudeWithRetry(
             .error_type = .network_failure,
         },
     };
+}
+
+fn freeRunResult(allocator: mem.Allocator, result: ralph.RunResult) void {
+    switch (result) {
+        .success => |s| allocator.free(s.response_text),
+        .failure => |f| allocator.free(f.message),
+        .interrupted => {},
+    }
 }
 
 fn runPlanMode(
@@ -764,15 +775,16 @@ fn runPlanMode(
     };
     defer allocator.free(simplify_output);
 
-    _ = claude.run(simplify_text, .{
+    if (claude.run(simplify_text, .{
         .output_file = simplify_output,
         .stream_to_terminal = !config.silent,
         .working_dir = config.project_dir,
-    }) catch {
+    })) |simplify_result| {
+        freeRunResult(allocator, simplify_result);
+        try ui.status("Simplification complete.");
+    } else |_| {
         try ui.info("Simplification pass skipped (Claude error)");
-    };
-
-    try ui.status("Simplification complete.");
+    }
 
     // Git commit for all changes
     git.addAll() catch |err| {
@@ -866,18 +878,18 @@ fn runIntrospection(
     const intro_output = try ralph.ui.generateOutputFilename(allocator, config.output_dir, "introspection");
     defer allocator.free(intro_output);
 
-    _ = claude.run(intro_text, .{
+    if (claude.run(intro_text, .{
         .output_file = intro_output,
         .stream_to_terminal = !config.silent,
         .working_dir = config.project_dir,
-    }) catch {
+    })) |intro_result| {
+        freeRunResult(allocator, intro_result);
+        state.resetTaskCount();
+        try state.save(state_path);
+        try ui.status("Introspection complete.");
+    } else |_| {
         try ui.info("Introspection skipped (Claude error)");
-        return;
-    };
-
-    state.resetTaskCount();
-    try state.save(state_path);
-    try ui.status("Introspection complete.");
+    }
 }
 
 test "main module compiles" {

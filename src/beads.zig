@@ -172,15 +172,18 @@ pub const Beads = struct {
     }
 
     pub fn claim(self: *Beads, task_id: []const u8) !void {
-        _ = try self.runCommand(&.{ "br", "update", task_id, "--status", "in_progress" });
+        const output = try self.runCommand(&.{ "br", "update", task_id, "--status", "in_progress" });
+        self.allocator.free(output);
     }
 
     pub fn complete(self: *Beads, task_id: []const u8, reason: []const u8) !void {
-        _ = try self.runCommand(&.{ "br", "close", task_id, "--reason", reason });
+        const output = try self.runCommand(&.{ "br", "close", task_id, "--reason", reason });
+        self.allocator.free(output);
     }
 
     pub fn sync(self: *Beads) !void {
-        _ = try self.runCommand(&.{ "br", "sync", "--flush-only" });
+        const output = try self.runCommand(&.{ "br", "sync", "--flush-only" });
+        self.allocator.free(output);
     }
 
     pub fn getRelatedBeads(self: *Beads, anchor: *const Task, limit: usize) ![]Task {
