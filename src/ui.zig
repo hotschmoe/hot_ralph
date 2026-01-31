@@ -124,8 +124,20 @@ pub const UI = struct {
         const title = try std.fmt.allocPrint(self.allocator, "TASK: {s} [{s}]", .{ task.title, task.id });
         defer self.allocator.free(title);
 
-        // Create and render the panel
-        var panel = rich.renderables.Panel.fromText(self.allocator, body_parts.items);
+        // Create styled text from markup and render the panel
+        var styled_text = rich.Text.fromMarkup(self.allocator, body_parts.items) catch {
+            // Fallback to plain text if markup parsing fails
+            var panel = rich.renderables.Panel.fromText(self.allocator, body_parts.items);
+            panel = panel.withTitle(title).rounded();
+            const segments = try panel.render(80, self.allocator);
+            defer self.allocator.free(segments);
+            try writeSegments(w, segments);
+            self.flushWriter(&writer);
+            return;
+        };
+        defer styled_text.deinit();
+
+        var panel = rich.renderables.Panel.fromStyledText(self.allocator, styled_text);
         panel = panel.withTitle(title).rounded();
 
         const segments = try panel.render(80, self.allocator);

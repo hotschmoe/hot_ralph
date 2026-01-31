@@ -160,6 +160,7 @@ pub const Claude = struct {
             "--verbose",
             "--output-format",
             "stream-json",
+            "--include-partial-messages",
             "--dangerously-skip-permissions",
             prompt,
         }, self.allocator);
@@ -190,6 +191,12 @@ pub const Claude = struct {
         else
             null;
 
+        // Indicate we're waiting for Claude
+        if (terminal_writer_opt) |*writer| {
+            writer.interface.writeAll("[Waiting for Claude...]\n") catch {};
+            writer.interface.flush() catch {};
+        }
+
         while (true) {
             const bytes_read = stdout.read(&read_buffer) catch |err| {
                 if (err == error.BrokenPipe) break;
@@ -218,8 +225,18 @@ pub const Claude = struct {
                             writer.interface.flush() catch {};
                         }
                     },
-                    .tool_use => {},
-                    .thinking => {},
+                    .tool_use => {
+                        if (terminal_writer_opt) |*writer| {
+                            writer.interface.writeAll("[tool use]\n") catch {};
+                            writer.interface.flush() catch {};
+                        }
+                    },
+                    .thinking => {
+                        if (terminal_writer_opt) |*writer| {
+                            writer.interface.writeAll(".") catch {};
+                            writer.interface.flush() catch {};
+                        }
+                    },
                     .error_msg => |msg| {
                         // msg is already owned, pass ownership to result
                         return RunResult{
@@ -355,6 +372,14 @@ pub const StreamParser = struct {
         };
 
         const type_str = getStringField(obj, "type") orelse "";
+
+        // Handle new stream_event wrapper format
+        if (mem.eql(u8, type_str, "stream_event")) {
+            if (obj.get("event")) |event| {
+                self.extractEvents(event, dupe_strings);
+            }
+            return;
+        }
 
         if (mem.eql(u8, type_str, "content_block_delta")) {
             if (obj.get("delta")) |delta| {
