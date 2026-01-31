@@ -169,6 +169,7 @@ pub const Claude = struct {
             child.cwd = wd;
         }
 
+        child.stdin_behavior = .Ignore; // Keep stdin for exit monitor
         child.stderr_behavior = .Pipe;
         child.stdout_behavior = .Pipe;
 
