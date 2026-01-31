@@ -25,6 +25,7 @@ pub const Config = struct {
     verbose: bool,
     quiet: bool,
     introspection_enabled: bool,
+    plan_mode: bool,
 
     const OUTPUT_DIR_NAME = ".hot_ralph";
 
@@ -47,6 +48,7 @@ pub const Config = struct {
             .verbose = args.verbose,
             .quiet = args.quiet,
             .introspection_enabled = args.introspection_enabled,
+            .plan_mode = args.plan_mode,
         };
     }
 
@@ -69,6 +71,7 @@ pub const Args = struct {
     verbose: bool,
     quiet: bool,
     introspection_enabled: bool,
+    plan_mode: bool,
 
     pub fn parse(allocator: mem.Allocator) !Args {
         var args_iter = try std.process.argsWithAllocator(allocator);
@@ -85,6 +88,7 @@ pub const Args = struct {
             .verbose = false,
             .quiet = false,
             .introspection_enabled = false,
+            .plan_mode = false,
         };
 
         while (args_iter.next()) |arg| {
@@ -102,6 +106,8 @@ pub const Args = struct {
                 result.quiet = true;
             } else if (mem.eql(u8, arg, "--introspection") or mem.eql(u8, arg, "-i")) {
                 result.introspection_enabled = true;
+            } else if (mem.eql(u8, arg, "--planmode") or mem.eql(u8, arg, "-p")) {
+                result.plan_mode = true;
             } else if (!mem.startsWith(u8, arg, "-")) {
                 result.project_dir = arg;
             }
@@ -189,6 +195,7 @@ pub fn printHelp(writer: anytype) !void {
         \\    -v, --verbose       Verbose output: stream Claude responses to terminal
         \\    -q, --quiet         Quiet mode: minimal output
         \\    -i, --introspection Enable periodic introspection after every 5 tasks
+        \\    -p, --planmode      Plan mode: batch 5-10 related tasks into single session
         \\
         \\REQUIREMENTS:
         \\    Project directory must contain:
@@ -207,15 +214,20 @@ pub fn printHelp(writer: anytype) !void {
         \\    0    Success - all tasks complete
         \\    1    Error - missing requirements
         \\    2    Error - Beads operation failed
-        \\    3    Error - Claude operation failed
+        \\    3    Error - Claude operation failed (unknown)
         \\    4    Error - Git operation failed
+        \\    5    Error - Claude subscription/quota limit
+        \\    6    Error - Claude authentication error
+        \\    7    Error - Claude rate limit exceeded
+        \\    8    Error - Claude network failure
+        \\    9    Error - Claude malformed response
         \\    130  Interrupted (Ctrl+C)
         \\
     );
 }
 
 pub fn printVersion(writer: anytype) !void {
-    try writer.writeAll("hot_ralph 0.2.0\n");
+    try writer.writeAll("hot_ralph 0.3.0\n");
 }
 
 test "Args.parse - default values" {
@@ -228,6 +240,7 @@ test "Args.parse - default values" {
         .verbose = false,
         .quiet = false,
         .introspection_enabled = false,
+        .plan_mode = false,
     };
     try std.testing.expect(args.project_dir == null);
     try std.testing.expect(!args.auto_mode);
@@ -237,6 +250,7 @@ test "Args.parse - default values" {
     try std.testing.expect(!args.verbose);
     try std.testing.expect(!args.quiet);
     try std.testing.expect(!args.introspection_enabled);
+    try std.testing.expect(!args.plan_mode);
 }
 
 test "Config.init - with project dir" {
@@ -250,6 +264,7 @@ test "Config.init - with project dir" {
         .verbose = false,
         .quiet = true,
         .introspection_enabled = false,
+        .plan_mode = false,
     };
 
     var config = try Config.init(allocator, args);

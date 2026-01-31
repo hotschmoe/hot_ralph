@@ -27,6 +27,30 @@ pub const Phase = enum {
     }
 };
 
+pub const PlanPhase = enum {
+    none,
+    planning,
+    executing,
+    complete,
+
+    pub fn toString(self: PlanPhase) []const u8 {
+        return switch (self) {
+            .none => "none",
+            .planning => "planning",
+            .executing => "executing",
+            .complete => "complete",
+        };
+    }
+
+    pub fn fromString(s: []const u8) ?PlanPhase {
+        if (mem.eql(u8, s, "none")) return .none;
+        if (mem.eql(u8, s, "planning")) return .planning;
+        if (mem.eql(u8, s, "executing")) return .executing;
+        if (mem.eql(u8, s, "complete")) return .complete;
+        return null;
+    }
+};
+
 pub const StateError = error{
     InvalidJson,
     InvalidPhase,
@@ -41,6 +65,10 @@ pub const State = struct {
     output_file: ?[]const u8,
     started_at: ?i64,
     tasks_since_introspection: u32,
+    plan_mode: bool,
+    planned_beads: ?[][]const u8,
+    plan_phase: PlanPhase,
+    current_plan_index: usize,
 
     pub fn init(allocator: mem.Allocator) State {
         return State{
@@ -50,6 +78,10 @@ pub const State = struct {
             .output_file = null,
             .started_at = null,
             .tasks_since_introspection = 0,
+            .plan_mode = false,
+            .planned_beads = null,
+            .plan_phase = .none,
+            .current_plan_index = 0,
         };
     }
 
@@ -59,6 +91,12 @@ pub const State = struct {
         }
         if (self.output_file) |file| {
             self.allocator.free(file);
+        }
+        if (self.planned_beads) |beads| {
+            for (beads) |bead| {
+                self.allocator.free(bead);
+            }
+            self.allocator.free(beads);
         }
     }
 
@@ -140,6 +178,42 @@ pub const State = struct {
         self.tasks_since_introspection = 0;
     }
 
+    pub fn setPlanMode(self: *State, task_ids: []const []const u8) !void {
+        // Clear any existing planned beads
+        if (self.planned_beads) |beads| {
+            for (beads) |bead| {
+                self.allocator.free(bead);
+            }
+            self.allocator.free(beads);
+        }
+
+        // Copy task IDs
+        var new_beads = try self.allocator.alloc([]const u8, task_ids.len);
+        errdefer self.allocator.free(new_beads);
+
+        for (task_ids, 0..) |id, i| {
+            new_beads[i] = try self.allocator.dupe(u8, id);
+        }
+
+        self.planned_beads = new_beads;
+        self.plan_mode = true;
+        self.plan_phase = .planning;
+        self.current_plan_index = 0;
+    }
+
+    pub fn clearPlanMode(self: *State) void {
+        if (self.planned_beads) |beads| {
+            for (beads) |bead| {
+                self.allocator.free(bead);
+            }
+            self.allocator.free(beads);
+            self.planned_beads = null;
+        }
+        self.plan_mode = false;
+        self.plan_phase = .none;
+        self.current_plan_index = 0;
+    }
+
     fn parseJson(allocator: mem.Allocator, content: []const u8) !State {
         const parsed = try json.parseFromSlice(json.Value, allocator, content, .{});
         defer parsed.deinit();
@@ -174,6 +248,47 @@ pub const State = struct {
             state.tasks_since_introspection = @intCast(val.integer);
         }
 
+        if (root.get("plan_mode")) |val| {
+            state.plan_mode = switch (val) {
+                .bool => |b| b,
+                else => false,
+            };
+        }
+
+        if (root.get("plan_phase")) |val| {
+            if (val == .string) {
+                state.plan_phase = PlanPhase.fromString(val.string) orelse .none;
+            }
+        }
+
+        if (root.get("current_plan_index")) |val| {
+            if (val == .integer) {
+                state.current_plan_index = @intCast(val.integer);
+            }
+        }
+
+        if (root.get("planned_beads")) |val| {
+            if (val == .array) {
+                var beads_list: std.ArrayList([]const u8) = .empty;
+                errdefer {
+                    for (beads_list.items) |b| allocator.free(b);
+                    beads_list.deinit(allocator);
+                }
+
+                for (val.array.items) |item| {
+                    if (item == .string) {
+                        try beads_list.append(allocator, try allocator.dupe(u8, item.string));
+                    }
+                }
+
+                if (beads_list.items.len > 0) {
+                    state.planned_beads = try beads_list.toOwnedSlice(allocator);
+                } else {
+                    beads_list.deinit(allocator);
+                }
+            }
+        }
+
         return state;
     }
 
@@ -206,7 +321,23 @@ pub const State = struct {
         }
         try writer.writeAll(",\n");
 
-        try writer.print("    \"tasks_since_introspection\": {d}\n", .{self.tasks_since_introspection});
+        try writer.print("    \"tasks_since_introspection\": {d},\n", .{self.tasks_since_introspection});
+
+        try writer.print("    \"plan_mode\": {s},\n", .{if (self.plan_mode) "true" else "false"});
+        try writer.print("    \"plan_phase\": \"{s}\",\n", .{self.plan_phase.toString()});
+        try writer.print("    \"current_plan_index\": {d},\n", .{self.current_plan_index});
+
+        try writer.writeAll("    \"planned_beads\": ");
+        if (self.planned_beads) |beads| {
+            try writer.writeAll("[");
+            for (beads, 0..) |bead, i| {
+                if (i > 0) try writer.writeAll(", ");
+                try writer.print("\"{s}\"", .{bead});
+            }
+            try writer.writeAll("]\n");
+        } else {
+            try writer.writeAll("null\n");
+        }
 
         try writer.writeAll("}\n");
     }
@@ -222,6 +353,10 @@ test "State - init and deinit" {
     try std.testing.expect(state.output_file == null);
     try std.testing.expect(state.started_at == null);
     try std.testing.expect(state.tasks_since_introspection == 0);
+    try std.testing.expect(!state.plan_mode);
+    try std.testing.expect(state.planned_beads == null);
+    try std.testing.expect(state.plan_phase == .none);
+    try std.testing.expect(state.current_plan_index == 0);
 }
 
 test "State - setTask and clearTask" {
@@ -252,6 +387,38 @@ test "Phase - toString and fromString" {
     try std.testing.expect(Phase.fromString("idle") == .idle);
     try std.testing.expect(Phase.fromString("executing") == .executing);
     try std.testing.expect(Phase.fromString("invalid") == null);
+}
+
+test "PlanPhase - toString and fromString" {
+    try std.testing.expectEqualStrings("none", PlanPhase.none.toString());
+    try std.testing.expectEqualStrings("planning", PlanPhase.planning.toString());
+    try std.testing.expectEqualStrings("executing", PlanPhase.executing.toString());
+    try std.testing.expectEqualStrings("complete", PlanPhase.complete.toString());
+
+    try std.testing.expect(PlanPhase.fromString("none") == .none);
+    try std.testing.expect(PlanPhase.fromString("planning") == .planning);
+    try std.testing.expect(PlanPhase.fromString("invalid") == null);
+}
+
+test "State - setPlanMode and clearPlanMode" {
+    const allocator = std.testing.allocator;
+    var state = State.init(allocator);
+    defer state.deinit();
+
+    const task_ids = &[_][]const u8{ "task1", "task2", "task3" };
+    try state.setPlanMode(task_ids);
+
+    try std.testing.expect(state.plan_mode);
+    try std.testing.expect(state.plan_phase == .planning);
+    try std.testing.expect(state.planned_beads != null);
+    try std.testing.expect(state.planned_beads.?.len == 3);
+    try std.testing.expectEqualStrings("task1", state.planned_beads.?[0]);
+
+    state.clearPlanMode();
+
+    try std.testing.expect(!state.plan_mode);
+    try std.testing.expect(state.plan_phase == .none);
+    try std.testing.expect(state.planned_beads == null);
 }
 
 test "State - JSON round trip" {

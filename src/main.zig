@@ -10,7 +10,77 @@ const EXIT_REQUIREMENTS: u8 = 1;
 const EXIT_BEADS: u8 = 2;
 const EXIT_CLAUDE: u8 = 3;
 const EXIT_GIT: u8 = 4;
+const EXIT_SUBSCRIPTION: u8 = 5;
+const EXIT_AUTH: u8 = 6;
+const EXIT_RATE_LIMIT: u8 = 7;
+const EXIT_NETWORK: u8 = 8;
+const EXIT_MALFORMED: u8 = 9;
 const EXIT_INTERRUPTED: u8 = 130;
+
+fn logFatalError(
+    allocator: mem.Allocator,
+    output_dir: []const u8,
+    error_type: ralph.claude.FatalErrorType,
+    message: []const u8,
+) void {
+    const ts = std.time.timestamp();
+    const filename = std.fmt.allocPrint(allocator, "{d}_error.md", .{ts}) catch return;
+    defer allocator.free(filename);
+
+    const path = fs.path.join(allocator, &.{ output_dir, filename }) catch return;
+    defer allocator.free(path);
+
+    const file = fs.createFileAbsolute(path, .{}) catch return;
+    defer file.close();
+
+    var buf: [4096]u8 = undefined;
+    var writer = file.writer(&buf);
+
+    writer.interface.print(
+        \\# Fatal Error Log
+        \\
+        \\**Type**: {s}
+        \\**Exit Code**: {d}
+        \\**Timestamp**: {d}
+        \\
+        \\## Message
+        \\
+        \\{s}
+        \\
+    , .{
+        error_type.toString(),
+        error_type.toExitCode(),
+        ts,
+        message,
+    }) catch {};
+    writer.interface.flush() catch {};
+}
+
+fn handleFatalClaudeError(
+    allocator: mem.Allocator,
+    config: *const ralph.Config,
+    beads: *ralph.Beads,
+    state_path: []const u8,
+    ui: *ralph.UI,
+    error_type: ralph.claude.FatalErrorType,
+    message: []const u8,
+) u8 {
+    // Log the error
+    logFatalError(allocator, config.output_dir, error_type, message);
+
+    // Display error to user
+    ui.errFmt("Fatal Claude error: {s}", .{error_type.toString()}) catch {};
+    ui.errFmt("Details: {s}", .{message}) catch {};
+
+    // Sync beads before exiting
+    syncBeadsAndExit(beads, state_path, ui) catch {};
+
+    return error_type.toExitCode();
+}
+
+fn shouldRetry(error_type: ralph.claude.FatalErrorType) bool {
+    return error_type == .network_failure or error_type == .rate_limit;
+}
 
 pub fn main() u8 {
     return run() catch |err| {
@@ -112,6 +182,20 @@ fn run() !u8 {
         exit_monitor.start() catch {
             // Non-fatal: continue without exit monitoring
         };
+    }
+
+    // Plan mode: batch execute related tasks
+    if (config.plan_mode) {
+        return runPlanMode(
+            allocator,
+            &config,
+            &beads,
+            &git,
+            &claude,
+            &state,
+            state_path,
+            &ui,
+        );
     }
 
     // Main loop
@@ -241,14 +325,42 @@ fn run() !u8 {
         const prompt_text = try task_prompt.renderToString(allocator);
         defer allocator.free(prompt_text);
 
-        // Run Claude
-        const result = claude.run(prompt_text, .{
-            .output_file = output_filename,
-            .stream_to_terminal = config.verbose,
-            .working_dir = config.project_dir,
-        }) catch |err| {
-            try ui.errFmt("Claude execution failed: {s}", .{@errorName(err)});
-            return EXIT_CLAUDE;
+        // Run Claude with retry logic for transient errors
+        const MAX_RETRIES: u8 = 3;
+        var retry_count: u8 = 0;
+        const result = retry_loop: while (retry_count < MAX_RETRIES) : (retry_count += 1) {
+            const attempt_result = claude.run(prompt_text, .{
+                .output_file = output_filename,
+                .stream_to_terminal = config.verbose,
+                .working_dir = config.project_dir,
+            }) catch |err| {
+                try ui.errFmt("Claude execution failed: {s}", .{@errorName(err)});
+                return EXIT_CLAUDE;
+            };
+
+            switch (attempt_result) {
+                .failure => |f| {
+                    if (shouldRetry(f.error_type) and retry_count + 1 < MAX_RETRIES) {
+                        const wait_seconds: u64 = @as(u64, 1) << @as(u6, @intCast(retry_count)); // 1s, 2s exponential backoff
+                        try ui.statusFmt("Transient error ({s}), retrying in {d}s...", .{
+                            f.error_type.toString(),
+                            wait_seconds,
+                        });
+                        allocator.free(f.message);
+                        std.Thread.sleep(wait_seconds * std.time.ns_per_s);
+                        continue;
+                    }
+                    break :retry_loop attempt_result;
+                },
+                else => break :retry_loop attempt_result,
+            }
+        } else blk: {
+            break :blk ralph.RunResult{
+                .failure = .{
+                    .message = allocator.dupe(u8, "Max retries exceeded") catch "",
+                    .error_type = .network_failure,
+                },
+            };
         };
 
         switch (result) {
@@ -258,6 +370,20 @@ fn run() !u8 {
                 return EXIT_INTERRUPTED;
             },
             .failure => |f| {
+                // Check if this is a fatal error that should exit
+                if (f.error_type != .unknown) {
+                    allocator.free(f.message);
+                    return handleFatalClaudeError(
+                        allocator,
+                        &config,
+                        &beads,
+                        state_path,
+                        &ui,
+                        f.error_type,
+                        f.message,
+                    );
+                }
+                // Non-fatal unknown errors continue
                 try ui.errFmt("Claude failed: {s}", .{f.message});
                 allocator.free(f.message);
                 state.phase = .idle;
@@ -429,6 +555,265 @@ fn run() !u8 {
 
     // Display summary
     try ui.displayComplete(tasks_completed);
+
+    return EXIT_SUCCESS;
+}
+
+const PLAN_MODE_LIMIT: usize = 10;
+
+fn runPlanMode(
+    allocator: mem.Allocator,
+    config: *const ralph.Config,
+    beads: *ralph.Beads,
+    git: *ralph.Git,
+    claude: *ralph.Claude,
+    state: *ralph.State,
+    state_path: []const u8,
+    ui: *ralph.UI,
+) !u8 {
+    // Get anchor task (highest priority ready)
+    var anchor = beads.getNextReady() catch |err| {
+        try ui.errFmt("Failed to get anchor task: {s}", .{@errorName(err)});
+        return EXIT_BEADS;
+    } orelse {
+        try ui.info("\nNo ready tasks for plan mode.");
+        return EXIT_SUCCESS;
+    };
+    defer anchor.deinit();
+
+    // Get related beads (5-10 tasks)
+    const related_tasks = beads.getRelatedBeads(&anchor, PLAN_MODE_LIMIT) catch |err| {
+        try ui.errFmt("Failed to get related tasks: {s}", .{@errorName(err)});
+        return EXIT_BEADS;
+    };
+    defer {
+        for (related_tasks) |*t| t.deinit();
+        allocator.free(related_tasks);
+    }
+
+    if (related_tasks.len == 0) {
+        try ui.info("\nNo tasks available for plan mode.");
+        return EXIT_SUCCESS;
+    }
+
+    // Convert to UI task format for display
+    var ui_tasks = try allocator.alloc(ralph.ui.Task, related_tasks.len);
+    defer allocator.free(ui_tasks);
+
+    for (related_tasks, 0..) |t, i| {
+        ui_tasks[i] = .{
+            .id = t.id,
+            .title = t.title,
+            .description = t.description,
+            .priority = t.priority,
+            .tags = t.tags,
+            .blocks = t.blocks,
+        };
+    }
+
+    // Display plan overview
+    try ui.displayPlanOverview(ui_tasks);
+
+    // Dry-run mode: show what would be done without executing
+    if (config.dry_run) {
+        try ui.status("DRY-RUN: Would execute the above plan");
+        return EXIT_SUCCESS;
+    }
+
+    // Prompt for approval
+    const approved = try ui.promptPlanApproval();
+    if (!approved) {
+        try ui.info("Plan rejected.");
+        return EXIT_SUCCESS;
+    }
+
+    // Store task IDs for state tracking
+    var task_ids = try allocator.alloc([]const u8, related_tasks.len);
+    defer allocator.free(task_ids);
+    for (related_tasks, 0..) |t, i| {
+        task_ids[i] = t.id;
+    }
+
+    // Update state with planned beads
+    try state.setPlanMode(task_ids);
+    state.plan_phase = .executing;
+    try state.save(state_path);
+
+    // Claim all tasks
+    for (related_tasks) |t| {
+        beads.claim(t.id) catch |err| {
+            try ui.errFmt("Failed to claim task {s}: {s}", .{ t.id, @errorName(err) });
+        };
+    }
+
+    // Generate plan mode output filename
+    const output_filename = try ralph.ui.generateOutputFilename(
+        allocator,
+        config.output_dir,
+        "plan_mode",
+    );
+    defer allocator.free(output_filename);
+
+    // Convert to prompt Task format
+    var prompt_tasks = try allocator.alloc(ralph.prompt.Task, related_tasks.len);
+    defer allocator.free(prompt_tasks);
+
+    for (related_tasks, 0..) |t, i| {
+        prompt_tasks[i] = .{
+            .id = t.id,
+            .title = t.title,
+            .description = t.description,
+            .priority = t.priority,
+            .tags = t.tags,
+        };
+    }
+
+    // Generate plan mode prompt
+    const plan_prompt = ralph.prompt.PlanModePrompt.init(prompt_tasks);
+    const prompt_text = try plan_prompt.renderToString(allocator);
+    defer allocator.free(prompt_text);
+
+    try ui.statusFmt("Executing plan with {d} tasks...", .{related_tasks.len});
+
+    // Run Claude with retry logic
+    const MAX_RETRIES: u8 = 3;
+    var retry_count: u8 = 0;
+    const result = retry_loop: while (retry_count < MAX_RETRIES) : (retry_count += 1) {
+        const attempt_result = claude.run(prompt_text, .{
+            .output_file = output_filename,
+            .stream_to_terminal = config.verbose,
+            .working_dir = config.project_dir,
+        }) catch |err| {
+            try ui.errFmt("Claude execution failed: {s}", .{@errorName(err)});
+            return EXIT_CLAUDE;
+        };
+
+        switch (attempt_result) {
+            .failure => |f| {
+                if (shouldRetry(f.error_type) and retry_count + 1 < MAX_RETRIES) {
+                    const wait_seconds: u64 = @as(u64, 1) << @as(u6, @intCast(retry_count));
+                    try ui.statusFmt("Transient error ({s}), retrying in {d}s...", .{
+                        f.error_type.toString(),
+                        wait_seconds,
+                    });
+                    allocator.free(f.message);
+                    std.Thread.sleep(wait_seconds * std.time.ns_per_s);
+                    continue;
+                }
+                break :retry_loop attempt_result;
+            },
+            else => break :retry_loop attempt_result,
+        }
+    } else blk: {
+        break :blk ralph.RunResult{
+            .failure = .{
+                .message = allocator.dupe(u8, "Max retries exceeded") catch "",
+                .error_type = .network_failure,
+            },
+        };
+    };
+
+    switch (result) {
+        .interrupted => {
+            try ui.info("\nPlan execution interrupted.");
+            try syncBeadsAndExit(beads, state_path, ui);
+            return EXIT_INTERRUPTED;
+        },
+        .failure => |f| {
+            if (f.error_type != .unknown) {
+                const exit_code = handleFatalClaudeError(
+                    allocator,
+                    config,
+                    beads,
+                    state_path,
+                    ui,
+                    f.error_type,
+                    f.message,
+                );
+                allocator.free(f.message);
+                return exit_code;
+            }
+            try ui.errFmt("Plan execution failed: {s}", .{f.message});
+            allocator.free(f.message);
+            state.clearPlanMode();
+            try state.save(state_path);
+            return EXIT_CLAUDE;
+        },
+        .success => |s| {
+            allocator.free(s.response_text);
+            try ui.statusFmt("Plan output saved to: {s}", .{s.output_file});
+        },
+    }
+
+    // Mark all beads as complete
+    for (related_tasks) |t| {
+        beads.complete(t.id, "Completed via hot_ralph plan mode") catch |err| {
+            try ui.errFmt("Failed to complete task {s}: {s}", .{ t.id, @errorName(err) });
+        };
+    }
+
+    try ui.statusFmt("Plan completed: {d} tasks", .{related_tasks.len});
+
+    // Run simplification pass
+    state.phase = .simplifying;
+    try state.save(state_path);
+
+    try ui.status("Running simplification pass...");
+    const simplify_prompt = ralph.SimplificationPrompt.init("Plan mode batch");
+    const simplify_text = simplify_prompt.renderToString(allocator) catch {
+        try ui.info("Simplification pass skipped (prompt error)");
+        state.phase = .idle;
+        state.clearPlanMode();
+        try state.save(state_path);
+        return EXIT_SUCCESS;
+    };
+    defer allocator.free(simplify_text);
+
+    const simplify_output = ralph.ui.generateOutputFilename(allocator, config.output_dir, "plan_simplify") catch {
+        try ui.info("Simplification pass skipped (output path error)");
+        state.phase = .idle;
+        state.clearPlanMode();
+        try state.save(state_path);
+        return EXIT_SUCCESS;
+    };
+    defer allocator.free(simplify_output);
+
+    _ = claude.run(simplify_text, .{
+        .output_file = simplify_output,
+        .stream_to_terminal = config.verbose,
+        .working_dir = config.project_dir,
+    }) catch {
+        try ui.info("Simplification pass skipped (Claude error)");
+    };
+
+    try ui.status("Simplification complete.");
+
+    // Git commit for all changes
+    git.addAll() catch |err| {
+        try ui.errFmt("Git add failed: {s}", .{@errorName(err)});
+    };
+
+    const commit_msg = try std.fmt.allocPrint(allocator, "Plan mode: complete {d} tasks", .{related_tasks.len});
+    defer allocator.free(commit_msg);
+
+    git.commit(commit_msg) catch |err| {
+        if (err == ralph.GitError.NothingToCommit) {
+            try ui.info("No changes to commit.");
+        } else {
+            try ui.errFmt("Git commit failed: {s}", .{@errorName(err)});
+        }
+    };
+
+    // Clear plan state
+    state.phase = .idle;
+    state.plan_phase = .complete;
+    state.clearPlanMode();
+    try state.save(state_path);
+
+    // Sync and cleanup
+    try syncBeadsAndExit(beads, state_path, ui);
+
+    try ui.displayComplete(related_tasks.len);
 
     return EXIT_SUCCESS;
 }

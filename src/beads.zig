@@ -155,7 +155,7 @@ pub const Beads = struct {
         return result;
     }
 
-    fn taskPriorityLessThan(_: void, a: Task, b: Task) bool {
+    pub fn taskPriorityLessThan(_: void, a: Task, b: Task) bool {
         if (a.priority != b.priority) {
             return a.priority < b.priority;
         }
@@ -181,6 +181,110 @@ pub const Beads = struct {
 
     pub fn sync(self: *Beads) !void {
         _ = try self.runCommand(&.{ "br", "sync", "--flush-only" });
+    }
+
+    pub fn getRelatedBeads(self: *Beads, anchor: *const Task, limit: usize) ![]Task {
+        const all_ready = try self.getAllReady();
+        defer self.allocator.free(all_ready);
+
+        if (all_ready.len == 0) {
+            return self.allocator.alloc(Task, 0);
+        }
+
+        // Use an ArrayList to collect related tasks
+        var related: std.ArrayList(Task) = .empty;
+        errdefer {
+            for (related.items) |*t| t.deinit();
+            related.deinit(self.allocator);
+        }
+
+        // Always include the anchor first
+        try related.append(self.allocator, try anchor.clone(self.allocator));
+
+        // Collect tags from anchor for matching
+        const anchor_tags = anchor.tags;
+
+        // First pass: find tasks sharing tags or in dependency chain
+        for (all_ready) |*task| {
+            if (mem.eql(u8, task.id, anchor.id)) {
+                task.deinit();
+                continue;
+            }
+
+            var is_related = false;
+
+            // Check for shared tags
+            for (task.tags) |tag| {
+                for (anchor_tags) |anchor_tag| {
+                    if (mem.eql(u8, tag, anchor_tag)) {
+                        is_related = true;
+                        break;
+                    }
+                }
+                if (is_related) break;
+            }
+
+            // Check if in dependency chain (blocks or blocked by anchor)
+            if (!is_related) {
+                for (anchor.blocks) |blocked_id| {
+                    if (mem.eql(u8, task.id, blocked_id)) {
+                        is_related = true;
+                        break;
+                    }
+                }
+            }
+
+            if (!is_related) {
+                for (task.blocks) |blocked_id| {
+                    if (mem.eql(u8, anchor.id, blocked_id)) {
+                        is_related = true;
+                        break;
+                    }
+                }
+            }
+
+            if (is_related) {
+                try related.append(self.allocator, task.*);
+                // Don't deinit - we moved ownership
+            } else {
+                task.deinit();
+            }
+
+            if (related.items.len >= limit) break;
+        }
+
+        // Second pass: fill remaining slots with priority-sorted tasks
+        if (related.items.len < limit) {
+            const remaining = try self.getAllReady();
+            defer {
+                for (remaining) |*t| t.deinit();
+                self.allocator.free(remaining);
+            }
+
+            // Sort by priority
+            std.sort.insertion(Task, remaining, {}, taskPriorityLessThan);
+
+            for (remaining) |*task| {
+                // Check if already in related list
+                var already_included = false;
+                for (related.items) |included| {
+                    if (mem.eql(u8, task.id, included.id)) {
+                        already_included = true;
+                        break;
+                    }
+                }
+
+                if (!already_included) {
+                    try related.append(self.allocator, try task.clone(self.allocator));
+                    if (related.items.len >= limit) break;
+                }
+            }
+        }
+
+        // Sort final list by priority
+        std.sort.insertion(Task, related.items, {}, taskPriorityLessThan);
+
+        return related.toOwnedSlice(self.allocator);
     }
 
     fn runCommand(self: *Beads, args: []const []const u8) ![]const u8 {
@@ -427,4 +531,36 @@ test "Task - clone" {
     try std.testing.expectEqualStrings("orig123", cloned.id);
     try std.testing.expectEqualStrings("Original", cloned.title);
     try std.testing.expect(cloned.id.ptr != original.id.ptr);
+}
+
+test "taskPriorityLessThan - sorts by priority" {
+    const allocator = std.testing.allocator;
+
+    const task_low = Task{
+        .allocator = allocator,
+        .id = "low",
+        .title = "Low",
+        .description = null,
+        .priority = 3,
+        .tags = &.{},
+        .status = .open,
+        .created_at = null,
+        .blocks = &.{},
+    };
+
+    const task_high = Task{
+        .allocator = allocator,
+        .id = "high",
+        .title = "High",
+        .description = null,
+        .priority = 1,
+        .tags = &.{},
+        .status = .open,
+        .created_at = null,
+        .blocks = &.{},
+    };
+
+    // Higher priority (lower number) should come first
+    try std.testing.expect(Beads.taskPriorityLessThan({}, task_high, task_low));
+    try std.testing.expect(!Beads.taskPriorityLessThan({}, task_low, task_high));
 }

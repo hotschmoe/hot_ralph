@@ -338,7 +338,7 @@ Be conservative - only suggest high-value additions.
 
 **State tracking**: `.hot_ralph/state.json` includes `tasks_since_introspection` counter (resets to 0 after introspection runs).
 
-### Plan Mode - TODO
+### Plan Mode - DONE
 
 **Problem**: Working on single beads one at a time can be inefficient when multiple related tasks could be planned and executed together.
 
@@ -407,7 +407,7 @@ After plan approval, implement all beads in order.
 
 **State tracking**: `.hot_ralph/state.json` includes `plan_mode` boolean and `planned_beads` array when active.
 
-### Subscription Limit and Error Handling - TODO
+### Subscription Limit and Error Handling - DONE
 
 **Problem**: When Claude subscription limits are hit or unknown errors occur, hot_ralph continues cycling and generates noise instead of exiting cleanly.
 

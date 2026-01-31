@@ -388,6 +388,87 @@ pub const UI = struct {
         self.flushWriter(&writer);
     }
 
+    pub fn displayPlanOverview(self: *UI, tasks: []const Task) !void {
+        if (self.quiet) return;
+
+        var writer = self.getWriter();
+        const w = &writer.interface;
+
+        try w.writeAll("\n");
+
+        // Create table with columns
+        var table = rich.renderables.Table.init(self.allocator);
+        defer table.deinit();
+
+        _ = table.withColumn(rich.renderables.Column.init("#").withJustify(.center).withStyle(rich.Style.empty.dim()));
+        _ = table.withColumn(rich.renderables.Column.init("ID").withStyle(rich.Style.empty.fg(rich.Color.cyan)));
+        _ = table.withColumn(rich.renderables.Column.init("Title").withStyle(rich.Style.empty.bold()));
+        _ = table.withColumn(rich.renderables.Column.init("Pri").withJustify(.center));
+        _ = table.withColumn(rich.renderables.Column.init("Tags").withStyle(rich.Style.empty.dim()));
+
+        for (tasks, 0..) |task, i| {
+            const num = std.fmt.allocPrint(self.allocator, "{d}", .{i + 1}) catch continue;
+            defer self.allocator.free(num);
+
+            const pri = std.fmt.allocPrint(self.allocator, "{d}", .{task.priority}) catch continue;
+            defer self.allocator.free(pri);
+
+            var tags_buf: std.ArrayList(u8) = .empty;
+            defer tags_buf.deinit(self.allocator);
+            for (task.tags, 0..) |tag, j| {
+                if (j > 0) tags_buf.appendSlice(self.allocator, ", ") catch {};
+                tags_buf.appendSlice(self.allocator, tag) catch {};
+            }
+            const tags_str = tags_buf.toOwnedSlice(self.allocator) catch "";
+            defer if (tags_str.len > 0) self.allocator.free(tags_str);
+
+            const max_title_len: usize = 45;
+            const title_display = if (task.title.len > max_title_len)
+                task.title[0..max_title_len]
+            else
+                task.title;
+
+            table.addRow(&.{ num, task.id, title_display, pri, tags_str }) catch {};
+        }
+
+        _ = table.withBoxStyle(rich.box.BoxStyle.rounded);
+        _ = table.withTitle("Plan Mode: Batch Execution");
+
+        const segments = table.render(100, self.allocator) catch {
+            try w.writeAll("=== Plan Mode: Batch Execution ===\n");
+            for (tasks, 0..) |task, i| {
+                try w.print("{d}. [{s}] {s}\n", .{ i + 1, task.id, task.title });
+            }
+            self.flushWriter(&writer);
+            return;
+        };
+        defer self.allocator.free(segments);
+
+        for (segments) |segment| {
+            try w.writeAll(segment.text);
+        }
+
+        try w.print("\nTotal tasks in plan: {d}\n", .{tasks.len});
+        self.flushWriter(&writer);
+    }
+
+    pub fn promptPlanApproval(self: *UI) !bool {
+        if (self.auto_mode) {
+            return true;
+        }
+
+        var writer = self.getWriter();
+        try writer.interface.writeAll("\nExecute this plan? [Y/n] ");
+        self.flushWriter(&writer);
+
+        const choice = try self.readSingleChar();
+
+        return switch (choice) {
+            'n', 'N' => false,
+            else => true,
+        };
+    }
+
     pub fn displayComplete(self: *UI, tasks_completed: usize) !void {
         var writer = self.getWriter();
         const w = &writer.interface;

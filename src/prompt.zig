@@ -229,6 +229,84 @@ test "SimplificationPrompt - render" {
     try std.testing.expect(mem.indexOf(u8, result, "git diff") != null);
 }
 
+pub const PlanModePrompt = struct {
+    tasks: []const Task,
+    context_files: []const []const u8,
+
+    const DEFAULT_CONTEXT_FILES = &[_][]const u8{ "SPEC.md", "VISION.md", "TESTING.md" };
+
+    pub fn init(tasks: []const Task) PlanModePrompt {
+        return PlanModePrompt{
+            .tasks = tasks,
+            .context_files = DEFAULT_CONTEXT_FILES,
+        };
+    }
+
+    pub fn withContextFiles(self: PlanModePrompt, files: []const []const u8) PlanModePrompt {
+        var result = self;
+        result.context_files = files;
+        return result;
+    }
+
+    pub fn render(self: *const PlanModePrompt, writer: anytype) !void {
+        try writer.writeAll("You are implementing a batch of related atomic tasks.\n\n");
+
+        try writer.writeAll("## Task Batch\n\n");
+        try writer.print("Execute the following {d} tasks in order:\n\n", .{self.tasks.len});
+
+        for (self.tasks, 0..) |task, i| {
+            try writer.print("### Task {d}: {s}\n", .{ i + 1, task.title });
+            try writer.print("**ID**: {s}\n", .{task.id});
+            try writer.print("**Priority**: {d}\n", .{task.priority});
+            if (task.tags.len > 0) {
+                try writer.writeAll("**Tags**: ");
+                for (task.tags, 0..) |tag, j| {
+                    if (j > 0) try writer.writeAll(", ");
+                    try writer.writeAll(tag);
+                }
+                try writer.writeAll("\n");
+            }
+            if (task.description) |desc| {
+                try writer.print("\n{s}\n", .{desc});
+            }
+            try writer.writeAll("\n---\n\n");
+        }
+
+        try writer.writeAll("## Context Files\n");
+        for (self.context_files) |file| {
+            try writer.print("- @{s}\n", .{file});
+        }
+        try writer.writeAll("\n");
+
+        try writer.writeAll(
+            \\## Execution Instructions
+            \\
+            \\1. Execute each task in the order listed above
+            \\2. For each task:
+            \\   - Implement ONLY what the task specifies
+            \\   - Run any validation criteria from the description
+            \\   - Verify the implementation before moving to the next task
+            \\3. After all tasks complete:
+            \\   - Run `git add` for all changed files
+            \\   - Create a single commit summarizing all changes
+            \\4. Report the status of each task: SUCCESS or FAILED with reason
+            \\
+            \\IMPORTANT: These are ATOMIC tasks. Implement each one completely before
+            \\moving to the next. If a task fails, note the failure and continue
+            \\with remaining tasks.
+            \\
+        );
+    }
+
+    pub fn renderToString(self: *const PlanModePrompt, allocator: mem.Allocator) ![]const u8 {
+        var buffer: std.ArrayList(u8) = .empty;
+        errdefer buffer.deinit(allocator);
+
+        try self.render(buffer.writer(allocator));
+        return buffer.toOwnedSlice(allocator);
+    }
+};
+
 test "FinalReviewPrompt - render" {
     const allocator = std.testing.allocator;
 
@@ -238,4 +316,35 @@ test "FinalReviewPrompt - render" {
     try std.testing.expect(mem.indexOf(u8, result, "final review") != null);
     try std.testing.expect(mem.indexOf(u8, result, "@SPEC.md") != null);
     try std.testing.expect(mem.indexOf(u8, result, "@VISION.md") != null);
+}
+
+test "PlanModePrompt - render" {
+    const allocator = std.testing.allocator;
+
+    const tasks = &[_]Task{
+        .{
+            .id = "task1",
+            .title = "First Task",
+            .description = "Do the first thing",
+            .priority = 1,
+            .tags = &.{},
+        },
+        .{
+            .id = "task2",
+            .title = "Second Task",
+            .description = "Do the second thing",
+            .priority = 2,
+            .tags = &.{},
+        },
+    };
+
+    const prompt = PlanModePrompt.init(tasks);
+    const result = try prompt.renderToString(allocator);
+    defer allocator.free(result);
+
+    try std.testing.expect(mem.indexOf(u8, result, "Task Batch") != null);
+    try std.testing.expect(mem.indexOf(u8, result, "First Task") != null);
+    try std.testing.expect(mem.indexOf(u8, result, "Second Task") != null);
+    try std.testing.expect(mem.indexOf(u8, result, "task1") != null);
+    try std.testing.expect(mem.indexOf(u8, result, "ATOMIC") != null);
 }

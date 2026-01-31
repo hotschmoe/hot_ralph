@@ -22,6 +22,7 @@ pub const ConfigError = config.ConfigError;
 
 pub const State = state.State;
 pub const Phase = state.Phase;
+pub const PlanPhase = state.PlanPhase;
 pub const StateError = state.StateError;
 
 pub const Task = beads.Task;
@@ -31,6 +32,7 @@ pub const BeadsError = beads.BeadsError;
 
 pub const Claude = claude.Claude;
 pub const ClaudeError = claude.ClaudeError;
+pub const FatalErrorType = claude.FatalErrorType;
 pub const RunResult = claude.RunResult;
 pub const RunOptions = claude.RunOptions;
 pub const StreamParser = claude.StreamParser;
@@ -49,9 +51,10 @@ pub const TaskPrompt = prompt.TaskPrompt;
 pub const SimplificationPrompt = prompt.SimplificationPrompt;
 pub const FinalReviewPrompt = prompt.FinalReviewPrompt;
 pub const IntrospectionPrompt = prompt.IntrospectionPrompt;
+pub const PlanModePrompt = prompt.PlanModePrompt;
 
 // Version info
-pub const version = "0.2.0";
+pub const version = "0.3.0";
 pub const version_string = "hot_ralph " ++ version;
 
 test {
