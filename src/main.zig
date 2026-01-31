@@ -312,6 +312,7 @@ fn run() !u8 {
         try state.save(state_path);
 
         try ui.statusFmt("Executing task {s}...", .{task.id});
+        try ui.statusFmt("Output: {s}", .{output_filename});
 
         // Generate prompt
         const prompt_task = ralph.prompt.Task{
@@ -689,6 +690,7 @@ fn runPlanMode(
     defer allocator.free(prompt_text);
 
     try ui.statusFmt("Executing plan with {d} tasks...", .{related_tasks.len});
+    try ui.statusFmt("Output: {s}", .{output_filename});
 
     // Run Claude with retry logic
     const result = try runClaudeWithRetry(allocator, claude, prompt_text, .{
