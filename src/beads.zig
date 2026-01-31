@@ -185,13 +185,15 @@ pub const Beads = struct {
 
     pub fn getRelatedBeads(self: *Beads, anchor: *const Task, limit: usize) ![]Task {
         const all_ready = try self.getAllReady();
-        defer self.allocator.free(all_ready);
+        defer {
+            for (all_ready) |*t| t.deinit();
+            self.allocator.free(all_ready);
+        }
 
         if (all_ready.len == 0) {
             return self.allocator.alloc(Task, 0);
         }
 
-        // Use an ArrayList to collect related tasks
         var related: std.ArrayList(Task) = .empty;
         errdefer {
             for (related.items) |*t| t.deinit();
@@ -201,90 +203,56 @@ pub const Beads = struct {
         // Always include the anchor first
         try related.append(self.allocator, try anchor.clone(self.allocator));
 
-        // Collect tags from anchor for matching
-        const anchor_tags = anchor.tags;
+        // Sort all tasks by priority for consistent ordering
+        std.sort.insertion(Task, all_ready, {}, taskPriorityLessThan);
 
-        // First pass: find tasks sharing tags or in dependency chain
-        for (all_ready) |*task| {
-            if (mem.eql(u8, task.id, anchor.id)) {
-                task.deinit();
-                continue;
-            }
+        // First pass: collect related tasks (shared tags or dependency chain)
+        for (all_ready) |task| {
+            if (related.items.len >= limit) break;
+            if (isTaskInList(task.id, related.items)) continue;
 
-            var is_related = false;
-
-            // Check for shared tags
-            for (task.tags) |tag| {
-                for (anchor_tags) |anchor_tag| {
-                    if (mem.eql(u8, tag, anchor_tag)) {
-                        is_related = true;
-                        break;
-                    }
-                }
-                if (is_related) break;
-            }
-
-            // Check if in dependency chain (blocks or blocked by anchor)
-            if (!is_related) {
-                for (anchor.blocks) |blocked_id| {
-                    if (mem.eql(u8, task.id, blocked_id)) {
-                        is_related = true;
-                        break;
-                    }
-                }
-            }
-
-            if (!is_related) {
-                for (task.blocks) |blocked_id| {
-                    if (mem.eql(u8, anchor.id, blocked_id)) {
-                        is_related = true;
-                        break;
-                    }
-                }
-            }
+            const is_related = sharesAnyTag(task.tags, anchor.tags) or
+                containsId(anchor.blocks, task.id) or
+                containsId(task.blocks, anchor.id);
 
             if (is_related) {
-                try related.append(self.allocator, task.*);
-                // Don't deinit - we moved ownership
-            } else {
-                task.deinit();
+                try related.append(self.allocator, try task.clone(self.allocator));
             }
-
-            if (related.items.len >= limit) break;
         }
 
         // Second pass: fill remaining slots with priority-sorted tasks
-        if (related.items.len < limit) {
-            const remaining = try self.getAllReady();
-            defer {
-                for (remaining) |*t| t.deinit();
-                self.allocator.free(remaining);
-            }
+        for (all_ready) |task| {
+            if (related.items.len >= limit) break;
+            if (isTaskInList(task.id, related.items)) continue;
 
-            // Sort by priority
-            std.sort.insertion(Task, remaining, {}, taskPriorityLessThan);
-
-            for (remaining) |*task| {
-                // Check if already in related list
-                var already_included = false;
-                for (related.items) |included| {
-                    if (mem.eql(u8, task.id, included.id)) {
-                        already_included = true;
-                        break;
-                    }
-                }
-
-                if (!already_included) {
-                    try related.append(self.allocator, try task.clone(self.allocator));
-                    if (related.items.len >= limit) break;
-                }
-            }
+            try related.append(self.allocator, try task.clone(self.allocator));
         }
 
-        // Sort final list by priority
         std.sort.insertion(Task, related.items, {}, taskPriorityLessThan);
-
         return related.toOwnedSlice(self.allocator);
+    }
+
+    fn sharesAnyTag(tags_a: []const []const u8, tags_b: []const []const u8) bool {
+        for (tags_a) |a| {
+            for (tags_b) |b| {
+                if (mem.eql(u8, a, b)) return true;
+            }
+        }
+        return false;
+    }
+
+    fn containsId(ids: []const []const u8, target: []const u8) bool {
+        for (ids) |id| {
+            if (mem.eql(u8, id, target)) return true;
+        }
+        return false;
+    }
+
+    fn isTaskInList(task_id: []const u8, tasks: []const Task) bool {
+        for (tasks) |t| {
+            if (mem.eql(u8, t.id, task_id)) return true;
+        }
+        return false;
     }
 
     fn runCommand(self: *Beads, args: []const []const u8) ![]const u8 {

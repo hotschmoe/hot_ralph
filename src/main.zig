@@ -326,42 +326,11 @@ fn run() !u8 {
         defer allocator.free(prompt_text);
 
         // Run Claude with retry logic for transient errors
-        const MAX_RETRIES: u8 = 3;
-        var retry_count: u8 = 0;
-        const result = retry_loop: while (retry_count < MAX_RETRIES) : (retry_count += 1) {
-            const attempt_result = claude.run(prompt_text, .{
-                .output_file = output_filename,
-                .stream_to_terminal = config.verbose,
-                .working_dir = config.project_dir,
-            }) catch |err| {
-                try ui.errFmt("Claude execution failed: {s}", .{@errorName(err)});
-                return EXIT_CLAUDE;
-            };
-
-            switch (attempt_result) {
-                .failure => |f| {
-                    if (shouldRetry(f.error_type) and retry_count + 1 < MAX_RETRIES) {
-                        const wait_seconds: u64 = @as(u64, 1) << @as(u6, @intCast(retry_count)); // 1s, 2s exponential backoff
-                        try ui.statusFmt("Transient error ({s}), retrying in {d}s...", .{
-                            f.error_type.toString(),
-                            wait_seconds,
-                        });
-                        allocator.free(f.message);
-                        std.Thread.sleep(wait_seconds * std.time.ns_per_s);
-                        continue;
-                    }
-                    break :retry_loop attempt_result;
-                },
-                else => break :retry_loop attempt_result,
-            }
-        } else blk: {
-            break :blk ralph.RunResult{
-                .failure = .{
-                    .message = allocator.dupe(u8, "Max retries exceeded") catch "",
-                    .error_type = .network_failure,
-                },
-            };
-        };
+        const result = try runClaudeWithRetry(allocator, &claude, prompt_text, .{
+            .output_file = output_filename,
+            .stream_to_terminal = config.verbose,
+            .working_dir = config.project_dir,
+        }, &ui);
 
         switch (result) {
             .interrupted => {
@@ -560,6 +529,52 @@ fn run() !u8 {
 }
 
 const PLAN_MODE_LIMIT: usize = 10;
+const MAX_RETRIES: u8 = 3;
+
+fn runClaudeWithRetry(
+    allocator: mem.Allocator,
+    claude: *ralph.Claude,
+    prompt: []const u8,
+    opts: ralph.claude.RunOptions,
+    ui: *ralph.UI,
+) !ralph.RunResult {
+    var retry_count: u8 = 0;
+    while (retry_count < MAX_RETRIES) : (retry_count += 1) {
+        const result = claude.run(prompt, opts) catch |err| {
+            try ui.errFmt("Claude execution failed: {s}", .{@errorName(err)});
+            return ralph.RunResult{
+                .failure = .{
+                    .message = allocator.dupe(u8, @errorName(err)) catch "",
+                    .error_type = .unknown,
+                },
+            };
+        };
+
+        switch (result) {
+            .failure => |f| {
+                if (shouldRetry(f.error_type) and retry_count + 1 < MAX_RETRIES) {
+                    const wait_seconds: u64 = @as(u64, 1) << @as(u6, @intCast(retry_count));
+                    try ui.statusFmt("Transient error ({s}), retrying in {d}s...", .{
+                        f.error_type.toString(),
+                        wait_seconds,
+                    });
+                    allocator.free(f.message);
+                    std.Thread.sleep(wait_seconds * std.time.ns_per_s);
+                    continue;
+                }
+                return result;
+            },
+            else => return result,
+        }
+    }
+
+    return ralph.RunResult{
+        .failure = .{
+            .message = allocator.dupe(u8, "Max retries exceeded") catch "",
+            .error_type = .network_failure,
+        },
+    };
+}
 
 fn runPlanMode(
     allocator: mem.Allocator,
@@ -676,42 +691,11 @@ fn runPlanMode(
     try ui.statusFmt("Executing plan with {d} tasks...", .{related_tasks.len});
 
     // Run Claude with retry logic
-    const MAX_RETRIES: u8 = 3;
-    var retry_count: u8 = 0;
-    const result = retry_loop: while (retry_count < MAX_RETRIES) : (retry_count += 1) {
-        const attempt_result = claude.run(prompt_text, .{
-            .output_file = output_filename,
-            .stream_to_terminal = config.verbose,
-            .working_dir = config.project_dir,
-        }) catch |err| {
-            try ui.errFmt("Claude execution failed: {s}", .{@errorName(err)});
-            return EXIT_CLAUDE;
-        };
-
-        switch (attempt_result) {
-            .failure => |f| {
-                if (shouldRetry(f.error_type) and retry_count + 1 < MAX_RETRIES) {
-                    const wait_seconds: u64 = @as(u64, 1) << @as(u6, @intCast(retry_count));
-                    try ui.statusFmt("Transient error ({s}), retrying in {d}s...", .{
-                        f.error_type.toString(),
-                        wait_seconds,
-                    });
-                    allocator.free(f.message);
-                    std.Thread.sleep(wait_seconds * std.time.ns_per_s);
-                    continue;
-                }
-                break :retry_loop attempt_result;
-            },
-            else => break :retry_loop attempt_result,
-        }
-    } else blk: {
-        break :blk ralph.RunResult{
-            .failure = .{
-                .message = allocator.dupe(u8, "Max retries exceeded") catch "",
-                .error_type = .network_failure,
-            },
-        };
-    };
+    const result = try runClaudeWithRetry(allocator, claude, prompt_text, .{
+        .output_file = output_filename,
+        .stream_to_terminal = config.verbose,
+        .working_dir = config.project_dir,
+    }, ui);
 
     switch (result) {
         .interrupted => {
