@@ -462,8 +462,24 @@ pub const UI = struct {
         };
         defer self.allocator.free(body);
 
-        // Create panel with double border
-        var panel = rich.renderables.Panel.fromText(self.allocator, body);
+        // Parse markup and create panel with styled text
+        var styled_text = rich.Text.fromMarkup(self.allocator, body) catch {
+            // Fallback to plain text if markup parsing fails
+            var panel = rich.renderables.Panel.fromText(self.allocator, body);
+            panel = panel.withTitle("Session Complete").double();
+            const segments = panel.render(50, self.allocator) catch {
+                try w.print("=== Session Complete ===\nTasks completed: {d}\n", .{tasks_completed});
+                self.flushWriter(&writer);
+                return;
+            };
+            defer self.allocator.free(segments);
+            try writeSegments(w, segments);
+            self.flushWriter(&writer);
+            return;
+        };
+        defer styled_text.deinit();
+
+        var panel = rich.renderables.Panel.fromStyledText(self.allocator, styled_text);
         panel = panel.withTitle("Session Complete").double();
 
         const segments = panel.render(50, self.allocator) catch {
