@@ -159,7 +159,8 @@ hot_ralph [OPTIONS] [PROJECT_DIR]
 # Examples:
 zig build run -- --dry-run                      # Preview mode, current dir
 zig build run -- --dry-run ~/beads_zig/         # Preview mode, specific project
-zig build run -- -p --dry-run ~/beads_zig/      # Plan mode preview
+zig build run -- -p --dry-run ~/beads_zig/      # Plan mode preview (5 tasks)
+zig build run -- -p 7 --dry-run ~/beads_zig/    # Plan mode with 7 tasks
 zig build run -- -a ~/beads_zig/                # Auto mode (no prompts)
 zig build run -- -v ~/beads_zig/                # Verbose (stream Claude output)
 ```
@@ -169,7 +170,7 @@ zig build run -- -v ~/beads_zig/                # Verbose (stream Claude output)
 | Flag | Long | Description |
 |------|------|-------------|
 | `-a` | `--auto` | Skip all prompts, assume yes |
-| `-p` | `--planmode` | Batch 5-10 related tasks into single session |
+| `-p [N]` | `--planmode [N]` | Batch N related tasks into single session (default: 5) |
 | `-i` | `--introspection` | Enable periodic introspection (every 5 tasks) |
 | `-s` | `--silent` | Don't stream Claude responses to terminal |
 | `-q` | `--quiet` | Minimal output |

@@ -521,7 +521,6 @@ fn run() !u8 {
     return EXIT_SUCCESS;
 }
 
-const PLAN_MODE_LIMIT: usize = 10;
 const MAX_RETRIES: u8 = 3;
 
 fn runClaudeWithRetry(
@@ -597,8 +596,8 @@ fn runPlanMode(
     };
     defer anchor.deinit();
 
-    // Get related beads (5-10 tasks)
-    const related_tasks = beads.getRelatedBeads(&anchor, PLAN_MODE_LIMIT) catch |err| {
+    // Get related beads (up to plan_mode_count tasks)
+    const related_tasks = beads.getRelatedBeads(&anchor, config.plan_mode_count) catch |err| {
         try ui.errFmt("Failed to get related tasks: {s}", .{@errorName(err)});
         return EXIT_BEADS;
     };

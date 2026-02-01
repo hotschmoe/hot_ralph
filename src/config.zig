@@ -26,6 +26,7 @@ pub const Config = struct {
     quiet: bool,
     introspection_enabled: bool,
     plan_mode: bool,
+    plan_mode_count: usize,
 
     const OUTPUT_DIR_NAME = ".hot_ralph";
 
@@ -49,6 +50,7 @@ pub const Config = struct {
             .quiet = args.quiet,
             .introspection_enabled = args.introspection_enabled,
             .plan_mode = args.plan_mode,
+            .plan_mode_count = args.plan_mode_count,
         };
     }
 
@@ -72,12 +74,23 @@ pub const Args = struct {
     quiet: bool,
     introspection_enabled: bool,
     plan_mode: bool,
+    plan_mode_count: usize,
+
+    const DEFAULT_PLAN_MODE_COUNT: usize = 5;
 
     pub fn parse(allocator: mem.Allocator) !Args {
         var args_iter = try std.process.argsWithAllocator(allocator);
         defer args_iter.deinit();
 
         _ = args_iter.next(); // skip program name
+
+        // Collect remaining args for two-pass parsing
+        var collected: std.ArrayList([]const u8) = .empty;
+        defer collected.deinit(allocator);
+
+        while (args_iter.next()) |arg| {
+            try collected.append(allocator, arg);
+        }
 
         var result = Args{
             .project_dir = null,
@@ -89,9 +102,12 @@ pub const Args = struct {
             .quiet = false,
             .introspection_enabled = false,
             .plan_mode = false,
+            .plan_mode_count = DEFAULT_PLAN_MODE_COUNT,
         };
 
-        while (args_iter.next()) |arg| {
+        var i: usize = 0;
+        while (i < collected.items.len) : (i += 1) {
+            const arg = collected.items[i];
             if (mem.eql(u8, arg, "--help") or mem.eql(u8, arg, "-h")) {
                 result.help_requested = true;
             } else if (mem.eql(u8, arg, "--version") or mem.eql(u8, arg, "-V")) {
@@ -108,6 +124,18 @@ pub const Args = struct {
                 result.introspection_enabled = true;
             } else if (mem.eql(u8, arg, "--planmode") or mem.eql(u8, arg, "-p")) {
                 result.plan_mode = true;
+                // Check if next arg is a number for plan_mode_count
+                if (i + 1 < collected.items.len) {
+                    const next = collected.items[i + 1];
+                    if (!mem.startsWith(u8, next, "-")) {
+                        if (std.fmt.parseInt(usize, next, 10)) |count| {
+                            result.plan_mode_count = count;
+                            i += 1; // consume the count arg
+                        } else |_| {
+                            // Not a number, leave for project_dir handling
+                        }
+                    }
+                }
             } else if (!mem.startsWith(u8, arg, "-")) {
                 result.project_dir = arg;
             }
@@ -195,7 +223,7 @@ pub fn printHelp(writer: anytype) !void {
         \\    -s, --silent        Silent mode: don't stream Claude responses to terminal
         \\    -q, --quiet         Quiet mode: minimal output
         \\    -i, --introspection Enable periodic introspection after every 5 tasks
-        \\    -p, --planmode      Plan mode: batch 5-10 related tasks into single session
+        \\    -p, --planmode [N]  Plan mode: batch N related tasks into single session (default: 5)
         \\
         \\REQUIREMENTS:
         \\    Project directory must contain:
@@ -241,6 +269,7 @@ test "Args.parse - default values" {
         .quiet = false,
         .introspection_enabled = false,
         .plan_mode = false,
+        .plan_mode_count = Args.DEFAULT_PLAN_MODE_COUNT,
     };
     try std.testing.expect(args.project_dir == null);
     try std.testing.expect(!args.auto_mode);
@@ -251,6 +280,7 @@ test "Args.parse - default values" {
     try std.testing.expect(!args.quiet);
     try std.testing.expect(!args.introspection_enabled);
     try std.testing.expect(!args.plan_mode);
+    try std.testing.expectEqual(@as(usize, 5), args.plan_mode_count);
 }
 
 test "Config.init - with project dir" {
@@ -265,6 +295,7 @@ test "Config.init - with project dir" {
         .quiet = true,
         .introspection_enabled = false,
         .plan_mode = false,
+        .plan_mode_count = 7,
     };
 
     var config = try Config.init(allocator, args);
@@ -275,4 +306,5 @@ test "Config.init - with project dir" {
     try std.testing.expect(config.dry_run);
     try std.testing.expect(config.quiet);
     try std.testing.expect(mem.endsWith(u8, config.output_dir, ".hot_ralph"));
+    try std.testing.expectEqual(@as(usize, 7), config.plan_mode_count);
 }
