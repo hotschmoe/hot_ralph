@@ -293,7 +293,9 @@ fn run() !u8 {
         // Dry-run mode: show what would be done without executing
         if (config.dry_run) {
             try ui.statusFmt("DRY-RUN: Would execute task {s}", .{task.id});
-            continue;
+            // Break instead of continue - we can't claim tasks in dry-run,
+            // so continuing would loop on the same task forever
+            break;
         }
 
         // Claim the task
