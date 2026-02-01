@@ -895,34 +895,19 @@ fn runCleanMode(allocator: mem.Allocator, target: ?[]const u8) u8 {
     const stdout = &stdout_writer.interface;
 
     // Determine the directory to clean
-    var allocated_path: ?[]const u8 = null;
-    defer if (allocated_path) |p| allocator.free(p);
-
-    const clean_dir: []const u8 = blk: {
-        if (target) |t| {
-            // Check if target is already a .hot_ralph directory
-            if (mem.endsWith(u8, t, ".hot_ralph") or mem.endsWith(u8, t, ".hot_ralph/")) {
-                break :blk t;
-            }
-            // Otherwise append .hot_ralph
-            const joined = fs.path.join(allocator, &.{ t, ".hot_ralph" }) catch {
-                stdout.print("Error: failed to construct path\n", .{}) catch {};
-                stdout_writer.interface.flush() catch {};
-                return EXIT_REQUIREMENTS;
-            };
-            allocated_path = joined;
-            break :blk joined;
-        } else {
-            break :blk ".hot_ralph";
-        }
+    const clean_dir = resolveCleanDir(allocator, target) catch {
+        stdout.print("Error: failed to construct path\n", .{}) catch {};
+        stdout_writer.interface.flush() catch {};
+        return EXIT_REQUIREMENTS;
     };
+    defer if (clean_dir.allocated) allocator.free(clean_dir.path);
 
-    stdout.print("Cleaning logs in: {s}\n", .{clean_dir}) catch {};
+    stdout.print("Cleaning logs in: {s}\n", .{clean_dir.path}) catch {};
 
     // Open the directory (try absolute first, then relative)
-    var dir = fs.openDirAbsolute(clean_dir, .{ .iterate = true }) catch blk: {
-        break :blk fs.cwd().openDir(clean_dir, .{ .iterate = true }) catch |err| {
-            stdout.print("Error: could not open directory: {s} ({s})\n", .{ clean_dir, @errorName(err) }) catch {};
+    var dir = fs.openDirAbsolute(clean_dir.path, .{ .iterate = true }) catch blk: {
+        break :blk fs.cwd().openDir(clean_dir.path, .{ .iterate = true }) catch |err| {
+            stdout.print("Error: could not open directory: {s} ({s})\n", .{ clean_dir.path, @errorName(err) }) catch {};
             stdout_writer.interface.flush() catch {};
             return EXIT_REQUIREMENTS;
         };
@@ -940,22 +925,16 @@ fn runCleanMode(allocator: mem.Allocator, target: ?[]const u8) u8 {
         if (entry.kind != .file) continue;
 
         // Only process .md and .jsonl files (skip already cleaned .toon files)
-        const is_md = mem.endsWith(u8, entry.name, ".md");
-        const is_jsonl = mem.endsWith(u8, entry.name, ".jsonl");
-        const is_toon = mem.endsWith(u8, entry.name, ".toon");
-        const is_cleaned = mem.endsWith(u8, entry.name, ".cleaned.jsonl");
+        const is_cleanable = mem.endsWith(u8, entry.name, ".md") or
+            (mem.endsWith(u8, entry.name, ".jsonl") and !mem.endsWith(u8, entry.name, ".cleaned.jsonl"));
 
-        if (is_toon or is_cleaned) {
-            skipped += 1;
-            continue;
-        }
-        if (!is_md and !is_jsonl) {
+        if (!is_cleanable) {
             skipped += 1;
             continue;
         }
 
         // Generate output path
-        const input_path = fs.path.join(allocator, &.{ clean_dir, entry.name }) catch continue;
+        const input_path = fs.path.join(allocator, &.{ clean_dir.path, entry.name }) catch continue;
         defer allocator.free(input_path);
 
         const output_path = ralph.log_cleaner.generateCleanedPath(allocator, input_path, .toon) catch continue;
@@ -986,6 +965,24 @@ fn runCleanMode(allocator: mem.Allocator, target: ?[]const u8) u8 {
     stdout_writer.interface.flush() catch {};
 
     return EXIT_SUCCESS;
+}
+
+const CleanDirResult = struct {
+    path: []const u8,
+    allocated: bool,
+};
+
+fn resolveCleanDir(allocator: mem.Allocator, target: ?[]const u8) !CleanDirResult {
+    const t = target orelse return .{ .path = ".hot_ralph", .allocated = false };
+
+    // Check if target is already a .hot_ralph directory
+    if (mem.endsWith(u8, t, ".hot_ralph") or mem.endsWith(u8, t, ".hot_ralph/")) {
+        return .{ .path = t, .allocated = false };
+    }
+
+    // Otherwise append .hot_ralph
+    const joined = try fs.path.join(allocator, &.{ t, ".hot_ralph" });
+    return .{ .path = joined, .allocated = true };
 }
 
 fn cleanLogFile(allocator: mem.Allocator, output_file: []const u8, ui: *ralph.UI) void {

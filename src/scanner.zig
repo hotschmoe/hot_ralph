@@ -64,33 +64,26 @@ pub const Scanner = struct {
             }
         }.lessThan);
 
-        // Take only the first 'count' entries
+        // Take only the first 'count' entries and load their content
         const take_count = @min(count, entries.items.len);
-        var result = try self.allocator.alloc([]const u8, take_count);
-        errdefer self.allocator.free(result);
 
-        var loaded: usize = 0;
+        var result = std.ArrayList([]const u8).initCapacity(self.allocator, take_count) catch {
+            return &.{};
+        };
         errdefer {
-            for (result[0..loaded]) |content| {
-                self.allocator.free(content);
-            }
+            for (result.items) |content| self.allocator.free(content);
+            result.deinit(self.allocator);
         }
 
         for (entries.items[0..take_count]) |entry| {
-            const file_path = try fs.path.join(self.allocator, &.{ hot_ralph_dir, entry.filename });
+            const file_path = fs.path.join(self.allocator, &.{ hot_ralph_dir, entry.filename }) catch continue;
             defer self.allocator.free(file_path);
 
             const content = self.readFileLimited(file_path, 1024 * 1024) catch continue;
-            result[loaded] = content;
-            loaded += 1;
+            result.appendAssumeCapacity(content);
         }
 
-        // Shrink if some files couldn't be loaded
-        if (loaded < take_count) {
-            result = self.allocator.realloc(result, loaded) catch result[0..loaded];
-        }
-
-        return result[0..loaded];
+        return result.toOwnedSlice(self.allocator) catch &.{};
     }
 
     /// Scans .claude/skills/ for *.md files.
