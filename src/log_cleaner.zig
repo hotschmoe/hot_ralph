@@ -234,6 +234,78 @@ pub fn generateCleanedPath(allocator: Allocator, input_path: []const u8, format:
     return std.fmt.allocPrint(allocator, "{s}{s}", .{ base, extension });
 }
 
+/// Generate timestamped log path with format: YYYYMMDD_HHMMSS_{label}.md
+pub fn generateLogPath(
+    allocator: Allocator,
+    output_dir: []const u8,
+    label: []const u8,
+) ![]const u8 {
+    const ts = std.time.timestamp();
+
+    // Convert to datetime components
+    const epoch_seconds: u64 = @intCast(ts);
+    const days_since_epoch = epoch_seconds / 86400;
+    const seconds_in_day = epoch_seconds % 86400;
+
+    const hours: u8 = @intCast(seconds_in_day / 3600);
+    const minutes: u8 = @intCast((seconds_in_day % 3600) / 60);
+    const seconds: u8 = @intCast(seconds_in_day % 60);
+
+    // Calculate date from days since epoch
+    var remaining_days = days_since_epoch;
+    var year: u16 = 1970;
+    while (true) {
+        const days_in_year: u64 = if (isLeapYear(@intCast(year))) 366 else 365;
+        if (remaining_days < days_in_year) break;
+        remaining_days -= days_in_year;
+        year += 1;
+    }
+
+    const days_in_month = [_]u8{ 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+    var month: u8 = 1;
+    for (days_in_month, 0..) |days, i| {
+        var d = days;
+        if (i == 1 and isLeapYear(@intCast(year))) d += 1;
+        if (remaining_days < d) break;
+        remaining_days -= d;
+        month += 1;
+    }
+    const day: u8 = @intCast(remaining_days + 1);
+
+    const filename = try std.fmt.allocPrint(
+        allocator,
+        "{d:0>4}{d:0>2}{d:0>2}_{d:0>2}{d:0>2}{d:0>2}_{s}.md",
+        .{ year, month, day, hours, minutes, seconds, label },
+    );
+    defer allocator.free(filename);
+
+    return fs.path.join(allocator, &.{ output_dir, filename });
+}
+
+fn isLeapYear(year: i32) bool {
+    if (@mod(year, 400) == 0) return true;
+    if (@mod(year, 100) == 0) return false;
+    if (@mod(year, 4) == 0) return true;
+    return false;
+}
+
+/// One-shot: raw JSON -> clean (filter noise) -> save to .md file
+/// Uses cleaned JSONL format (not TOON) so introspection can read it
+pub fn saveCleanLog(
+    allocator: Allocator,
+    raw_json: []const u8,
+    output_path: []const u8,
+) !CleanStats {
+    const result = try cleanSession(allocator, raw_json, .{ .format = .jsonl });
+    defer allocator.free(result.content);
+
+    const file = try fs.createFileAbsolute(output_path, .{});
+    defer file.close();
+    try file.writeAll(result.content);
+
+    return result.stats;
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -356,4 +428,25 @@ test "generateCleanedPath no extension" {
     const path = try generateCleanedPath(allocator, "/path/to/session", .toon);
     defer allocator.free(path);
     try std.testing.expectEqualStrings("/path/to/session.toon", path);
+}
+
+test "generateLogPath creates timestamped path" {
+    const allocator = std.testing.allocator;
+
+    const path = try generateLogPath(allocator, "/output", "task_abc");
+    defer allocator.free(path);
+
+    // Verify format: /output/YYYYMMDD_HHMMSS_task_abc.md
+    try std.testing.expect(path.len > 0);
+    try std.testing.expect(std.mem.startsWith(u8, path, "/output/"));
+    try std.testing.expect(std.mem.endsWith(u8, path, "_task_abc.md"));
+    // Should have timestamp portion: 8 digits + _ + 6 digits = 15 chars
+    try std.testing.expect(path.len >= "/output/".len + 15 + "_task_abc.md".len);
+}
+
+test "isLeapYear" {
+    try std.testing.expect(isLeapYear(2000)); // divisible by 400
+    try std.testing.expect(!isLeapYear(1900)); // divisible by 100 but not 400
+    try std.testing.expect(isLeapYear(2024)); // divisible by 4
+    try std.testing.expect(!isLeapYear(2023)); // not divisible by 4
 }

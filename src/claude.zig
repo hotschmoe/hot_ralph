@@ -107,15 +107,14 @@ pub fn classifyError(message: []const u8) FatalErrorType {
 }
 
 pub const RunOptions = struct {
-    output_file: []const u8,
     stream_to_terminal: bool = true,
     working_dir: ?[]const u8 = null,
 };
 
 pub const RunResult = union(enum) {
     success: struct {
-        output_file: []const u8,
         response_text: []const u8,
+        raw_json: []const u8,
     },
     failure: struct {
         message: []const u8,
@@ -147,12 +146,6 @@ pub const Claude = struct {
     }
 
     pub fn run(self: *Claude, prompt: []const u8, opts: RunOptions) !RunResult {
-        // Create output file for writing
-        const output_file = fs.createFileAbsolute(opts.output_file, .{}) catch {
-            return ClaudeError.OutputWriteFailed;
-        };
-        defer output_file.close();
-
         // Spawn claude process
         var child = process.Child.init(&.{
             "claude",
@@ -183,7 +176,10 @@ pub const Claude = struct {
 
         const stdout = child.stdout orelse return ClaudeError.SpawnFailed;
         var response_buffer: std.ArrayList(u8) = .empty;
-        defer response_buffer.deinit(self.allocator);
+        errdefer response_buffer.deinit(self.allocator);
+
+        var json_buffer: std.ArrayList(u8) = .empty;
+        errdefer json_buffer.deinit(self.allocator);
 
         var read_buffer: [4096]u8 = undefined;
         var terminal_stdout_buf: [4096]u8 = undefined;
@@ -208,10 +204,8 @@ pub const Claude = struct {
 
             const chunk = read_buffer[0..bytes_read];
 
-            // Write raw JSON to output file
-            output_file.writeAll(chunk) catch {
-                return ClaudeError.OutputWriteFailed;
-            };
+            // Buffer raw JSON in memory
+            try json_buffer.appendSlice(self.allocator, chunk);
 
             // Parse streaming JSON and extract text
             parser.feed(chunk);
@@ -306,8 +300,8 @@ pub const Claude = struct {
 
         return RunResult{
             .success = .{
-                .output_file = opts.output_file,
                 .response_text = try response_buffer.toOwnedSlice(self.allocator),
+                .raw_json = try json_buffer.toOwnedSlice(self.allocator),
             },
         };
     }

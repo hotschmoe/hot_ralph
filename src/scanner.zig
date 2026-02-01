@@ -19,7 +19,7 @@ pub const Scanner = struct {
         };
     }
 
-    /// Scans .hot_ralph/ for files matching *_task_*.toon or other log patterns.
+    /// Scans .hot_ralph/ for files matching *_task_*.md or other log patterns.
     /// Returns content of the most recent N task log files sorted by timestamp descending.
     pub fn scanTaskLogs(self: *Scanner, count: usize) ![][]const u8 {
         const hot_ralph_dir = try fs.path.join(self.allocator, &.{ self.base_dir, ".hot_ralph" });
@@ -42,7 +42,7 @@ pub const Scanner = struct {
         var iter = dir.iterate();
         while (try iter.next()) |entry| {
             if (entry.kind != .file) continue;
-            if (!mem.endsWith(u8, entry.name, ".toon")) continue;
+            if (!mem.endsWith(u8, entry.name, ".md")) continue;
             if (!matchesLogPattern(entry.name)) continue;
 
             const timestamp = parseTimestamp(entry.name) orelse continue;
@@ -200,7 +200,7 @@ pub fn parseTimestamp(filename: []const u8) ?i64 {
 
 /// Checks if filename matches log patterns (task, plan_mode, simplify, introspection)
 pub fn matchesLogPattern(filename: []const u8) bool {
-    if (!mem.endsWith(u8, filename, ".toon")) return false;
+    if (!mem.endsWith(u8, filename, ".md")) return false;
 
     // Match various log types: task, plan_mode, plan_simplify, introspection
     return mem.indexOf(u8, filename, "_task_") != null or
@@ -247,7 +247,7 @@ fn isLeapYear(year: i32) bool {
 // Tests
 
 test "parseTimestamp - valid filename" {
-    const timestamp = parseTimestamp("20250130_143022_task_abc.toon");
+    const timestamp = parseTimestamp("20250130_143022_task_abc.md");
     try std.testing.expect(timestamp != null);
 
     // Verify the timestamp is reasonable (after 2025-01-01)
@@ -268,19 +268,19 @@ test "parseTimestamp - missing underscore separator" {
 }
 
 test "matchesLogPattern - valid patterns" {
-    try std.testing.expect(matchesLogPattern("20250130_143022_task_abc.toon"));
-    try std.testing.expect(matchesLogPattern("20250130_143022_plan_mode.toon"));
-    try std.testing.expect(matchesLogPattern("20250130_143022_plan_simplify.toon"));
-    try std.testing.expect(matchesLogPattern("20250130_143022_introspection.toon"));
-    try std.testing.expect(matchesLogPattern("anything_task_anything.toon"));
+    try std.testing.expect(matchesLogPattern("20250130_143022_task_abc.md"));
+    try std.testing.expect(matchesLogPattern("20250130_143022_plan_mode.md"));
+    try std.testing.expect(matchesLogPattern("20250130_143022_plan_simplify.md"));
+    try std.testing.expect(matchesLogPattern("20250130_143022_introspection.md"));
+    try std.testing.expect(matchesLogPattern("anything_task_anything.md"));
 }
 
 test "matchesLogPattern - invalid patterns" {
-    try std.testing.expect(!matchesLogPattern("task.toon"));
-    try std.testing.expect(!matchesLogPattern("20250130_143022_abc.toon"));
+    try std.testing.expect(!matchesLogPattern("task.md"));
+    try std.testing.expect(!matchesLogPattern("20250130_143022_abc.md"));
     try std.testing.expect(!matchesLogPattern("_task_.txt"));
     try std.testing.expect(!matchesLogPattern("notask.md"));
-    try std.testing.expect(!matchesLogPattern("20250130_143022_task_abc.md")); // old format
+    try std.testing.expect(!matchesLogPattern("20250130_143022_task_abc.toon")); // old format
 }
 
 test "epochDayFromDate - basic calculation" {

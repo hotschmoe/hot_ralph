@@ -349,18 +349,10 @@ fn run() !u8 {
         const task_label = try std.fmt.allocPrint(allocator, "task_{s}", .{task.id});
         defer allocator.free(task_label);
 
-        const output_filename = try ralph.ui.generateOutputFilename(
-            allocator,
-            config.output_dir,
-            task_label,
-        );
-        defer allocator.free(output_filename);
-
-        try state.setTask(task.id, output_filename);
+        try state.setTask(task.id, task_label);
         try state.save(state_path);
 
         try ui.statusFmt("Executing task {s}...", .{task.id});
-        try ui.statusFmt("Output: {s}", .{output_filename});
 
         // Generate prompt
         const prompt_task = ralph.prompt.Task{
@@ -376,7 +368,6 @@ fn run() !u8 {
 
         // Run Claude with retry logic for transient errors
         const result = try runClaudeWithRetry(allocator, &claude, prompt_text, .{
-            .output_file = output_filename,
             .stream_to_terminal = !config.silent,
             .working_dir = config.project_dir,
         }, &ui);
@@ -406,13 +397,24 @@ fn run() !u8 {
                 continue;
             },
             .success => |s| {
-                allocator.free(s.response_text);
-                try ui.statusFmt("Output saved to: {s}", .{s.output_file});
+                defer allocator.free(s.response_text);
+                defer allocator.free(s.raw_json);
 
-                // Clean the log file unless --no-clean is set
-                if (!config.no_clean) {
-                    cleanLogFile(allocator, s.output_file, &ui);
-                }
+                // Save cleaned log from memory
+                const log_path = ralph.log_cleaner.generateLogPath(
+                    allocator,
+                    config.output_dir,
+                    task_label,
+                ) catch |err| {
+                    try ui.errFmt("Log path generation failed: {s}", .{@errorName(err)});
+                    continue;
+                };
+                defer allocator.free(log_path);
+
+                _ = ralph.log_cleaner.saveCleanLog(allocator, s.raw_json, log_path) catch |err| {
+                    try ui.errFmt("Log cleaning failed: {s}", .{@errorName(err)});
+                };
+                try ui.statusFmt("Log saved: {s}", .{log_path});
             },
         }
 
@@ -466,20 +468,35 @@ fn run() !u8 {
             };
             defer allocator.free(label);
 
-            const simplify_output = ralph.ui.generateOutputFilename(allocator, config.output_dir, label) catch {
-                try ui.info("Simplification pass skipped (output path error)");
-                state.phase = .idle;
-                break :simplify;
-            };
-            defer allocator.free(simplify_output);
-
             if (claude.run(simplify_text, .{
-                .output_file = simplify_output,
                 .stream_to_terminal = !config.silent,
                 .working_dir = config.project_dir,
             })) |simplify_result| {
-                freeRunResult(allocator, simplify_result);
-                try ui.status("Simplification complete.");
+                switch (simplify_result) {
+                    .success => |s| {
+                        defer allocator.free(s.response_text);
+                        defer allocator.free(s.raw_json);
+
+                        const log_path = ralph.log_cleaner.generateLogPath(
+                            allocator,
+                            config.output_dir,
+                            label,
+                        ) catch {
+                            break :simplify;
+                        };
+                        defer allocator.free(log_path);
+
+                        _ = ralph.log_cleaner.saveCleanLog(allocator, s.raw_json, log_path) catch {};
+                        try ui.status("Simplification complete.");
+                    },
+                    .failure => |f| {
+                        allocator.free(f.message);
+                        try ui.info("Simplification pass skipped (Claude error)");
+                    },
+                    .interrupted => {
+                        try ui.info("Simplification pass interrupted");
+                    },
+                }
             } else |_| {
                 try ui.info("Simplification pass skipped (Claude error)");
             }
@@ -543,16 +560,37 @@ fn run() !u8 {
         const review_text = try ralph.FinalReviewPrompt.renderToString(allocator);
         defer allocator.free(review_text);
 
-        const review_output = try ralph.ui.generateOutputFilename(allocator, config.output_dir, "final_review");
-        defer allocator.free(review_output);
+        const review_label = "final_review";
 
         if (claude.run(review_text, .{
-            .output_file = review_output,
             .stream_to_terminal = !config.silent,
             .working_dir = config.project_dir,
         })) |review_result| {
-            freeRunResult(allocator, review_result);
-            try ui.status("Final review complete.");
+            switch (review_result) {
+                .success => |s| {
+                    defer allocator.free(s.response_text);
+                    defer allocator.free(s.raw_json);
+
+                    const log_path = ralph.log_cleaner.generateLogPath(
+                        allocator,
+                        config.output_dir,
+                        review_label,
+                    ) catch {
+                        break :review;
+                    };
+                    defer allocator.free(log_path);
+
+                    _ = ralph.log_cleaner.saveCleanLog(allocator, s.raw_json, log_path) catch {};
+                    try ui.status("Final review complete.");
+                },
+                .failure => |f| {
+                    allocator.free(f.message);
+                    try ui.info("Final review skipped (Claude error)");
+                },
+                .interrupted => {
+                    try ui.info("Final review interrupted");
+                },
+            }
         } else |_| {
             try ui.info("Final review skipped (Claude error)");
         }
@@ -613,7 +651,10 @@ fn runClaudeWithRetry(
 
 fn freeRunResult(allocator: mem.Allocator, result: ralph.RunResult) void {
     switch (result) {
-        .success => |s| allocator.free(s.response_text),
+        .success => |s| {
+            allocator.free(s.response_text);
+            allocator.free(s.raw_json);
+        },
         .failure => |f| allocator.free(f.message),
         .interrupted => {},
     }
@@ -704,13 +745,7 @@ fn runPlanMode(
         };
     }
 
-    // Generate plan mode output filename
-    const output_filename = try ralph.ui.generateOutputFilename(
-        allocator,
-        config.output_dir,
-        "plan_mode",
-    );
-    defer allocator.free(output_filename);
+    const plan_label = "plan_mode";
 
     // Convert to prompt Task format
     var prompt_tasks = try allocator.alloc(ralph.prompt.Task, related_tasks.len);
@@ -732,11 +767,9 @@ fn runPlanMode(
     defer allocator.free(prompt_text);
 
     try ui.statusFmt("Executing plan with {d} tasks...", .{related_tasks.len});
-    try ui.statusFmt("Output: {s}", .{output_filename});
 
     // Run Claude with retry logic
     const result = try runClaudeWithRetry(allocator, claude, prompt_text, .{
-        .output_file = output_filename,
         .stream_to_terminal = !config.silent,
         .working_dir = config.project_dir,
     }, ui);
@@ -766,13 +799,26 @@ fn runPlanMode(
             return EXIT_CLAUDE;
         },
         .success => |s| {
-            allocator.free(s.response_text);
-            try ui.statusFmt("Plan output saved to: {s}", .{s.output_file});
+            defer allocator.free(s.response_text);
+            defer allocator.free(s.raw_json);
 
-            // Clean the log file unless --no-clean is set
-            if (!config.no_clean) {
-                cleanLogFile(allocator, s.output_file, ui);
-            }
+            // Save cleaned log from memory
+            const log_path = ralph.log_cleaner.generateLogPath(
+                allocator,
+                config.output_dir,
+                plan_label,
+            ) catch |err| {
+                try ui.errFmt("Log path generation failed: {s}", .{@errorName(err)});
+                state.clearPlanMode();
+                try state.save(state_path);
+                return EXIT_CLAUDE;
+            };
+            defer allocator.free(log_path);
+
+            _ = ralph.log_cleaner.saveCleanLog(allocator, s.raw_json, log_path) catch |err| {
+                try ui.errFmt("Log cleaning failed: {s}", .{@errorName(err)});
+            };
+            try ui.statusFmt("Log saved: {s}", .{log_path});
         },
     }
 
@@ -800,22 +846,39 @@ fn runPlanMode(
     };
     defer allocator.free(simplify_text);
 
-    const simplify_output = ralph.ui.generateOutputFilename(allocator, config.output_dir, "plan_simplify") catch {
-        try ui.info("Simplification pass skipped (output path error)");
-        state.phase = .idle;
-        state.clearPlanMode();
-        try state.save(state_path);
-        return EXIT_SUCCESS;
-    };
-    defer allocator.free(simplify_output);
+    const simplify_label = "plan_simplify";
 
     if (claude.run(simplify_text, .{
-        .output_file = simplify_output,
         .stream_to_terminal = !config.silent,
         .working_dir = config.project_dir,
     })) |simplify_result| {
-        freeRunResult(allocator, simplify_result);
-        try ui.status("Simplification complete.");
+        switch (simplify_result) {
+            .success => |s| {
+                defer allocator.free(s.response_text);
+                defer allocator.free(s.raw_json);
+
+                const log_path = ralph.log_cleaner.generateLogPath(
+                    allocator,
+                    config.output_dir,
+                    simplify_label,
+                ) catch {
+                    try ui.info("Simplification log skipped (path error)");
+                    state.phase = .idle;
+                    return EXIT_SUCCESS;
+                };
+                defer allocator.free(log_path);
+
+                _ = ralph.log_cleaner.saveCleanLog(allocator, s.raw_json, log_path) catch {};
+                try ui.status("Simplification complete.");
+            },
+            .failure => |f| {
+                allocator.free(f.message);
+                try ui.info("Simplification pass skipped (Claude error)");
+            },
+            .interrupted => {
+                try ui.info("Simplification pass interrupted");
+            },
+        }
     } else |_| {
         try ui.info("Simplification pass skipped (Claude error)");
     }
@@ -985,28 +1048,6 @@ fn resolveCleanDir(allocator: mem.Allocator, target: ?[]const u8) !CleanDirResul
     return .{ .path = joined, .allocated = true };
 }
 
-fn cleanLogFile(allocator: mem.Allocator, output_file: []const u8, ui: *ralph.UI) void {
-    const clean_path = ralph.log_cleaner.generateCleanedPath(allocator, output_file, .toon) catch {
-        ui.info("Log cleaning skipped (path error)") catch {};
-        return;
-    };
-    defer allocator.free(clean_path);
-
-    const stats = ralph.log_cleaner.cleanSessionFile(allocator, output_file, clean_path, .{}) catch |err| {
-        ui.statusFmt("Log cleaning failed: {s}", .{@errorName(err)}) catch {};
-        return;
-    };
-
-    // Delete original file after successful conversion
-    fs.deleteFileAbsolute(output_file) catch {};
-
-    ui.statusFmt("Log cleaned: {d} -> {d} lines ({s})", .{
-        stats.input_lines,
-        stats.output_lines,
-        clean_path,
-    }) catch {};
-}
-
 fn runIntrospection(
     allocator: mem.Allocator,
     config: *const ralph.Config,
@@ -1053,18 +1094,41 @@ fn runIntrospection(
     const intro_text = try introspection.renderToString(allocator);
     defer allocator.free(intro_text);
 
-    const intro_output = try ralph.ui.generateOutputFilename(allocator, config.output_dir, "introspection");
-    defer allocator.free(intro_output);
+    const intro_label = "introspection";
 
     if (claude.run(intro_text, .{
-        .output_file = intro_output,
         .stream_to_terminal = !config.silent,
         .working_dir = config.project_dir,
     })) |intro_result| {
-        freeRunResult(allocator, intro_result);
-        state.resetTaskCount();
-        try state.save(state_path);
-        try ui.status("Introspection complete.");
+        switch (intro_result) {
+            .success => |s| {
+                defer allocator.free(s.response_text);
+                defer allocator.free(s.raw_json);
+
+                const log_path = ralph.log_cleaner.generateLogPath(
+                    allocator,
+                    config.output_dir,
+                    intro_label,
+                ) catch {
+                    state.resetTaskCount();
+                    try state.save(state_path);
+                    return;
+                };
+                defer allocator.free(log_path);
+
+                _ = ralph.log_cleaner.saveCleanLog(allocator, s.raw_json, log_path) catch {};
+                state.resetTaskCount();
+                try state.save(state_path);
+                try ui.status("Introspection complete.");
+            },
+            .failure => |f| {
+                allocator.free(f.message);
+                try ui.info("Introspection skipped (Claude error)");
+            },
+            .interrupted => {
+                try ui.info("Introspection interrupted");
+            },
+        }
     } else |_| {
         try ui.info("Introspection skipped (Claude error)");
     }
