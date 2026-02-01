@@ -133,7 +133,7 @@ we love you, Claude! do your best today
 
 Automated task runner that pulls work from Beads, executes via Claude CLI, and commits results. Designed for autonomous, incremental project development.
 
-- **Version**: 0.3.0
+- **Version**: 0.5.0
 - **Minimum Zig**: 0.15.2
 - **Dependencies**: rich_zig (terminal UI)
 
@@ -159,10 +159,11 @@ hot_ralph [OPTIONS] [PROJECT_DIR]
 # Examples:
 zig build run -- --dry-run                      # Preview mode, current dir
 zig build run -- --dry-run ~/beads_zig/         # Preview mode, specific project
-zig build run -- -p --dry-run ~/beads_zig/      # Plan mode preview (5 tasks)
-zig build run -- -p 7 --dry-run ~/beads_zig/    # Plan mode with 7 tasks
 zig build run -- -a ~/beads_zig/                # Auto mode (no prompts)
-zig build run -- -v ~/beads_zig/                # Verbose (stream Claude output)
+zig build run -- -p ~/beads_zig/                # Plan mode: batch 5 tasks (default)
+zig build run -- -p 10 ~/beads_zig/             # Plan mode: batch 10 tasks
+zig build run -- -p -a ~/beads_zig/             # Plan mode + auto (unattended batch)
+zig build run -- -p 7 --dry-run ~/beads_zig/    # Preview 7-task plan
 ```
 
 ### Options
@@ -170,7 +171,7 @@ zig build run -- -v ~/beads_zig/                # Verbose (stream Claude output)
 | Flag | Long | Description |
 |------|------|-------------|
 | `-a` | `--auto` | Skip all prompts, assume yes |
-| `-p [N]` | `--planmode [N]` | Batch N related tasks into single session (default: 5) |
+| `-p [N]` | `--planmode [N]` | Batch N related tasks (default: 5, e.g. `-p 10` for 10 tasks) |
 | `-i` | `--introspection` | Enable periodic introspection (every 5 tasks) |
 | `-s` | `--silent` | Don't stream Claude responses to terminal |
 | `-q` | `--quiet` | Minimal output |

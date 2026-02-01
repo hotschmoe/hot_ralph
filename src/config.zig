@@ -247,7 +247,7 @@ pub fn printHelp(writer: anytype) !void {
 }
 
 pub fn printVersion(writer: anytype) !void {
-    try writer.writeAll("hot_ralph 0.4.0\n");
+    try writer.writeAll("hot_ralph 0.5.0\n");
 }
 
 test "Args.parse - default values" {
