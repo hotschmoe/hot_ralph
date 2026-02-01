@@ -20,7 +20,6 @@ pub const OutputFormat = enum {
 
 pub const CleanerOptions = struct {
     format: OutputFormat = .toon,
-    max_tool_output: usize = 500,
     preserve_unknown: bool = true,
 };
 
@@ -32,11 +31,7 @@ pub const CleanStats = struct {
     parse_errors: usize = 0,
 };
 
-pub const CleanerError = error{
-    FileNotFound,
-    InvalidPath,
-    WriteError,
-} || Allocator.Error || fs.File.OpenError || fs.File.WriteError;
+pub const CleanerError = Allocator.Error || fs.File.OpenError || fs.File.WriteError;
 
 /// Patterns that indicate streaming noise (should be dropped)
 const drop_patterns = [_][]const u8{
@@ -94,14 +89,6 @@ fn extractType(allocator: Allocator, line: []const u8) ?[]const u8 {
     if (type_val != .string) return null;
 
     return allocator.dupe(u8, type_val.string) catch null;
-}
-
-/// Truncate tool output in a JSON line if it exceeds max_length
-/// Note: Full truncation would require mutable JSON manipulation.
-/// For now, this is a placeholder that returns the original line.
-fn truncateToolOutput(allocator: Allocator, line: []const u8, max_length: usize) ![]const u8 {
-    _ = max_length;
-    return allocator.dupe(u8, line);
 }
 
 /// Clean raw JSONL content and return cleaned content with stats

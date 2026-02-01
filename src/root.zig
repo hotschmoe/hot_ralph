@@ -54,7 +54,6 @@ pub const FinalReviewPrompt = prompt.FinalReviewPrompt;
 pub const IntrospectionPrompt = prompt.IntrospectionPrompt;
 pub const PlanModePrompt = prompt.PlanModePrompt;
 
-pub const LogCleaner = log_cleaner;
 pub const CleanerOptions = log_cleaner.CleanerOptions;
 pub const CleanStats = log_cleaner.CleanStats;
 pub const OutputFormat = log_cleaner.OutputFormat;
