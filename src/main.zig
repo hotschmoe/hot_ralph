@@ -189,18 +189,53 @@ fn run() !u8 {
         // Non-fatal: continue without exit monitoring
     };
 
-    // Plan mode: batch execute related tasks
+    // Plan mode: batch execute related tasks in a loop
     if (config.plan_mode) {
-        return runPlanMode(
-            allocator,
-            &config,
-            &beads,
-            &git,
-            &claude,
-            &state,
-            state_path,
-            &ui,
-        );
+        while (!exit_monitor.shouldExit()) {
+            const plan_result = try runPlanMode(
+                allocator,
+                &config,
+                &beads,
+                &git,
+                &claude,
+                &state,
+                state_path,
+                &ui,
+                &exit_monitor,
+                stop_file_path,
+            );
+
+            // Exit on error or if no more tasks
+            if (plan_result != EXIT_SUCCESS) {
+                return plan_result;
+            }
+
+            // Check if there are more ready tasks
+            const ready_count = beads.readyCount() catch {
+                return EXIT_BEADS;
+            };
+            if (ready_count == 0) {
+                try ui.info("\nNo more ready tasks.");
+                break;
+            }
+
+            // Countdown between batches (allows graceful exit)
+            const should_continue = try ui.countdownWithExitCheck(5, &exit_monitor, stop_file_path);
+            if (!should_continue) {
+                clearStopFile(stop_file_path, &ui);
+                break;
+            }
+        }
+
+        // Check if exit was requested
+        if (exit_monitor.shouldExit()) {
+            try ui.info("\nExit requested. Finishing up...");
+        }
+
+        // Final sync after all batches
+        try syncBeadsAndExit(&beads, state_path, &ui);
+
+        return EXIT_SUCCESS;
     }
 
     // Main loop
@@ -585,7 +620,11 @@ fn runPlanMode(
     state: *ralph.State,
     state_path: []const u8,
     ui: *ralph.UI,
+    exit_monitor: *ralph.ExitMonitor,
+    stop_file_path: []const u8,
 ) !u8 {
+    _ = exit_monitor;
+    _ = stop_file_path;
     // Get anchor task (highest priority ready)
     var anchor = beads.getNextReady() catch |err| {
         try ui.errFmt("Failed to get anchor task: {s}", .{@errorName(err)});
@@ -788,16 +827,24 @@ fn runPlanMode(
         }
     };
 
-    // Clear plan state
+    // Update task counter for the batch
+    for (0..related_tasks.len) |_| {
+        state.incrementTaskCount();
+    }
+
+    // Periodic introspection (every 5 tasks when enabled)
+    const INTROSPECTION_INTERVAL: u32 = 5;
+    if (config.introspection_enabled and state.tasks_since_introspection >= INTROSPECTION_INTERVAL) {
+        try runIntrospection(allocator, config, claude, state, state_path, ui);
+    }
+
+    // Clear plan state for this batch
     state.phase = .idle;
     state.plan_phase = .complete;
     state.clearPlanMode();
     try state.save(state_path);
 
-    // Sync and cleanup
-    try syncBeadsAndExit(beads, state_path, ui);
-
-    try ui.displayComplete(related_tasks.len);
+    try ui.statusFmt("Batch complete: {d} tasks", .{related_tasks.len});
 
     return EXIT_SUCCESS;
 }
