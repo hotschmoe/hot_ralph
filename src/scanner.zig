@@ -19,7 +19,7 @@ pub const Scanner = struct {
         };
     }
 
-    /// Scans .hot_ralph/ for files matching *_task_*.md pattern.
+    /// Scans .hot_ralph/ for files matching *_task_*.toon or other log patterns.
     /// Returns content of the most recent N task log files sorted by timestamp descending.
     pub fn scanTaskLogs(self: *Scanner, count: usize) ![][]const u8 {
         const hot_ralph_dir = try fs.path.join(self.allocator, &.{ self.base_dir, ".hot_ralph" });
@@ -42,8 +42,8 @@ pub const Scanner = struct {
         var iter = dir.iterate();
         while (try iter.next()) |entry| {
             if (entry.kind != .file) continue;
-            if (!mem.endsWith(u8, entry.name, ".md")) continue;
-            if (!matchesTaskLogPattern(entry.name)) continue;
+            if (!mem.endsWith(u8, entry.name, ".toon")) continue;
+            if (!matchesLogPattern(entry.name)) continue;
 
             const timestamp = parseTimestamp(entry.name) orelse continue;
 
@@ -205,12 +205,15 @@ pub fn parseTimestamp(filename: []const u8) ?i64 {
     return epoch_day * 86400 + day_seconds;
 }
 
-/// Checks if filename matches pattern *_task_*.md
-pub fn matchesTaskLogPattern(filename: []const u8) bool {
-    if (!mem.endsWith(u8, filename, ".md")) return false;
+/// Checks if filename matches log patterns (task, plan_mode, simplify, introspection)
+pub fn matchesLogPattern(filename: []const u8) bool {
+    if (!mem.endsWith(u8, filename, ".toon")) return false;
 
-    // Look for "_task_" anywhere in the filename
-    return mem.indexOf(u8, filename, "_task_") != null;
+    // Match various log types: task, plan_mode, plan_simplify, introspection
+    return mem.indexOf(u8, filename, "_task_") != null or
+        mem.indexOf(u8, filename, "_plan_") != null or
+        mem.indexOf(u8, filename, "_simplify") != null or
+        mem.indexOf(u8, filename, "_introspection") != null;
 }
 
 /// Calculates days since Unix epoch for a given date.
@@ -251,7 +254,7 @@ fn isLeapYear(year: i32) bool {
 // Tests
 
 test "parseTimestamp - valid filename" {
-    const timestamp = parseTimestamp("20250130_143022_task_abc.md");
+    const timestamp = parseTimestamp("20250130_143022_task_abc.toon");
     try std.testing.expect(timestamp != null);
 
     // Verify the timestamp is reasonable (after 2025-01-01)
@@ -271,17 +274,20 @@ test "parseTimestamp - missing underscore separator" {
     try std.testing.expect(parseTimestamp("20250130X143022_task.md") == null);
 }
 
-test "matchesTaskLogPattern - valid patterns" {
-    try std.testing.expect(matchesTaskLogPattern("20250130_143022_task_abc.md"));
-    try std.testing.expect(matchesTaskLogPattern("anything_task_anything.md"));
-    try std.testing.expect(matchesTaskLogPattern("_task_.md"));
+test "matchesLogPattern - valid patterns" {
+    try std.testing.expect(matchesLogPattern("20250130_143022_task_abc.toon"));
+    try std.testing.expect(matchesLogPattern("20250130_143022_plan_mode.toon"));
+    try std.testing.expect(matchesLogPattern("20250130_143022_plan_simplify.toon"));
+    try std.testing.expect(matchesLogPattern("20250130_143022_introspection.toon"));
+    try std.testing.expect(matchesLogPattern("anything_task_anything.toon"));
 }
 
-test "matchesTaskLogPattern - invalid patterns" {
-    try std.testing.expect(!matchesTaskLogPattern("task.md"));
-    try std.testing.expect(!matchesTaskLogPattern("20250130_143022_abc.md"));
-    try std.testing.expect(!matchesTaskLogPattern("_task_.txt"));
-    try std.testing.expect(!matchesTaskLogPattern("notask.md"));
+test "matchesLogPattern - invalid patterns" {
+    try std.testing.expect(!matchesLogPattern("task.toon"));
+    try std.testing.expect(!matchesLogPattern("20250130_143022_abc.toon"));
+    try std.testing.expect(!matchesLogPattern("_task_.txt"));
+    try std.testing.expect(!matchesLogPattern("notask.md"));
+    try std.testing.expect(!matchesLogPattern("20250130_143022_task_abc.md")); // old format
 }
 
 test "epochDayFromDate - basic calculation" {

@@ -967,6 +967,11 @@ fn runCleanMode(allocator: mem.Allocator, target: ?[]const u8) u8 {
             continue;
         };
 
+        // Delete original file after successful conversion
+        fs.deleteFileAbsolute(input_path) catch {
+            fs.cwd().deleteFile(input_path) catch {};
+        };
+
         stdout.print("  [OK] {s} -> {d} lines (was {d})\n", .{ entry.name, stats.output_lines, stats.input_lines }) catch {};
         cleaned += 1;
         total_input += stats.input_lines;
@@ -994,6 +999,9 @@ fn cleanLogFile(allocator: mem.Allocator, output_file: []const u8, ui: *ralph.UI
         ui.statusFmt("Log cleaning failed: {s}", .{@errorName(err)}) catch {};
         return;
     };
+
+    // Delete original file after successful conversion
+    fs.deleteFileAbsolute(output_file) catch {};
 
     ui.statusFmt("Log cleaned: {d} -> {d} lines ({s})", .{
         stats.input_lines,
