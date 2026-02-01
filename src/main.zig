@@ -17,6 +17,9 @@ const EXIT_NETWORK: u8 = 8;
 const EXIT_MALFORMED: u8 = 9;
 const EXIT_INTERRUPTED: u8 = 130;
 
+// Introspection runs every N completed tasks when enabled
+const INTROSPECTION_INTERVAL: u32 = 5;
+
 fn logFatalError(
     allocator: mem.Allocator,
     output_dir: []const u8,
@@ -201,8 +204,6 @@ fn run() !u8 {
                 &state,
                 state_path,
                 &ui,
-                &exit_monitor,
-                stop_file_path,
             );
 
             // Exit on error or if no more tasks
@@ -505,11 +506,8 @@ fn run() !u8 {
         state.clearTask();
         try state.save(state_path);
 
-        // Periodic introspection (every 5 tasks when enabled)
-        const INTROSPECTION_INTERVAL: u32 = 5;
-        if (config.introspection_enabled and state.tasks_since_introspection >= INTROSPECTION_INTERVAL) {
-            try runIntrospection(allocator, &config, &claude, &state, state_path, &ui);
-        }
+        // Periodic introspection when enabled
+        try maybeRunIntrospection(allocator, &config, &claude, &state, state_path, &ui);
 
         // Countdown between tasks (allows graceful exit in auto mode)
         const should_continue = try ui.countdownWithExitCheck(5, &exit_monitor, stop_file_path);
@@ -620,11 +618,7 @@ fn runPlanMode(
     state: *ralph.State,
     state_path: []const u8,
     ui: *ralph.UI,
-    exit_monitor: *ralph.ExitMonitor,
-    stop_file_path: []const u8,
 ) !u8 {
-    _ = exit_monitor;
-    _ = stop_file_path;
     // Get anchor task (highest priority ready)
     var anchor = beads.getNextReady() catch |err| {
         try ui.errFmt("Failed to get anchor task: {s}", .{@errorName(err)});
@@ -832,11 +826,8 @@ fn runPlanMode(
         state.incrementTaskCount();
     }
 
-    // Periodic introspection (every 5 tasks when enabled)
-    const INTROSPECTION_INTERVAL: u32 = 5;
-    if (config.introspection_enabled and state.tasks_since_introspection >= INTROSPECTION_INTERVAL) {
-        try runIntrospection(allocator, config, claude, state, state_path, ui);
-    }
+    // Periodic introspection when enabled
+    try maybeRunIntrospection(allocator, config, claude, state, state_path, ui);
 
     // Clear plan state for this batch
     state.phase = .idle;
@@ -868,6 +859,19 @@ fn clearStopFile(stop_file_path: []const u8, ui: *ralph.UI) void {
             ui.info("Warning: Could not clear stop file") catch {};
         }
     };
+}
+
+fn maybeRunIntrospection(
+    allocator: mem.Allocator,
+    config: *const ralph.Config,
+    claude: *ralph.Claude,
+    state: *ralph.State,
+    state_path: []const u8,
+    ui: *ralph.UI,
+) !void {
+    if (!config.introspection_enabled) return;
+    if (state.tasks_since_introspection < INTROSPECTION_INTERVAL) return;
+    try runIntrospection(allocator, config, claude, state, state_path, ui);
 }
 
 fn runIntrospection(
