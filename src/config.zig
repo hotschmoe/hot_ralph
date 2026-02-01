@@ -28,6 +28,8 @@ pub const Config = struct {
     plan_mode: bool,
     plan_mode_count: usize,
     no_clean: bool,
+    clean_mode: bool,
+    clean_target: ?[]const u8,
 
     const OUTPUT_DIR_NAME = ".hot_ralph";
 
@@ -53,10 +55,13 @@ pub const Config = struct {
             .plan_mode = args.plan_mode,
             .plan_mode_count = args.plan_mode_count,
             .no_clean = args.no_clean,
+            .clean_mode = args.clean_mode,
+            .clean_target = if (args.clean_target) |t| try allocator.dupe(u8, t) else null,
         };
     }
 
     pub fn deinit(self: *Config) void {
+        if (self.clean_target) |t| self.allocator.free(t);
         self.allocator.free(self.output_dir);
         self.allocator.free(self.project_dir);
     }
@@ -78,6 +83,8 @@ pub const Args = struct {
     plan_mode: bool,
     plan_mode_count: usize,
     no_clean: bool,
+    clean_mode: bool,
+    clean_target: ?[]const u8,
 
     const DEFAULT_PLAN_MODE_COUNT: usize = 5;
 
@@ -99,6 +106,8 @@ pub const Args = struct {
             .plan_mode = false,
             .plan_mode_count = DEFAULT_PLAN_MODE_COUNT,
             .no_clean = false,
+            .clean_mode = false,
+            .clean_target = null,
         };
 
         var pending_arg: ?[]const u8 = null;
@@ -134,6 +143,16 @@ pub const Args = struct {
                 }
             } else if (mem.eql(u8, arg, "--no-clean")) {
                 result.no_clean = true;
+            } else if (mem.eql(u8, arg, "clean")) {
+                result.clean_mode = true;
+                // Next non-flag arg is the clean target
+                if (args_iter.next()) |next| {
+                    if (!mem.startsWith(u8, next, "-")) {
+                        result.clean_target = next;
+                    } else {
+                        pending_arg = next;
+                    }
+                }
             } else if (!mem.startsWith(u8, arg, "-")) {
                 result.project_dir = arg;
             }
@@ -209,6 +228,7 @@ pub fn printHelp(writer: anytype) !void {
         \\
         \\USAGE:
         \\    hot_ralph [OPTIONS] [PROJECT_DIR]
+        \\    hot_ralph clean [DIR]              Clean logs in DIR/.hot_ralph/ (or DIR if .hot_ralph)
         \\
         \\ARGS:
         \\    PROJECT_DIR    Path to project directory (default: current directory)
@@ -270,6 +290,8 @@ test "Args.parse - default values" {
         .plan_mode = false,
         .plan_mode_count = Args.DEFAULT_PLAN_MODE_COUNT,
         .no_clean = false,
+        .clean_mode = false,
+        .clean_target = null,
     };
     try std.testing.expect(args.project_dir == null);
     try std.testing.expect(!args.auto_mode);
@@ -282,6 +304,8 @@ test "Args.parse - default values" {
     try std.testing.expect(!args.plan_mode);
     try std.testing.expectEqual(@as(usize, 5), args.plan_mode_count);
     try std.testing.expect(!args.no_clean);
+    try std.testing.expect(!args.clean_mode);
+    try std.testing.expect(args.clean_target == null);
 }
 
 test "Config.init - with project dir" {
@@ -298,6 +322,8 @@ test "Config.init - with project dir" {
         .plan_mode = false,
         .plan_mode_count = 7,
         .no_clean = false,
+        .clean_mode = false,
+        .clean_target = null,
     };
 
     var config = try Config.init(allocator, args);

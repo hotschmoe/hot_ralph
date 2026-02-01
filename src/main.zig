@@ -121,6 +121,11 @@ fn run() !u8 {
         return EXIT_SUCCESS;
     }
 
+    // Handle clean subcommand
+    if (args.clean_mode) {
+        return runCleanMode(allocator, args.clean_target);
+    }
+
     // Initialize config
     var config = try ralph.Config.init(allocator, args);
     defer config.deinit();
@@ -882,6 +887,100 @@ fn maybeRunIntrospection(
     if (!config.introspection_enabled) return;
     if (state.tasks_since_introspection < INTROSPECTION_INTERVAL) return;
     try runIntrospection(allocator, config, claude, state, state_path, ui);
+}
+
+fn runCleanMode(allocator: mem.Allocator, target: ?[]const u8) u8 {
+    var stdout_buf: [4096]u8 = undefined;
+    var stdout_writer = fs.File.stdout().writer(&stdout_buf);
+    const stdout = &stdout_writer.interface;
+
+    // Determine the directory to clean
+    var allocated_path: ?[]const u8 = null;
+    defer if (allocated_path) |p| allocator.free(p);
+
+    const clean_dir: []const u8 = blk: {
+        if (target) |t| {
+            // Check if target is already a .hot_ralph directory
+            if (mem.endsWith(u8, t, ".hot_ralph") or mem.endsWith(u8, t, ".hot_ralph/")) {
+                break :blk t;
+            }
+            // Otherwise append .hot_ralph
+            const joined = fs.path.join(allocator, &.{ t, ".hot_ralph" }) catch {
+                stdout.print("Error: failed to construct path\n", .{}) catch {};
+                stdout_writer.interface.flush() catch {};
+                return EXIT_REQUIREMENTS;
+            };
+            allocated_path = joined;
+            break :blk joined;
+        } else {
+            break :blk ".hot_ralph";
+        }
+    };
+
+    stdout.print("Cleaning logs in: {s}\n", .{clean_dir}) catch {};
+
+    // Open the directory (try absolute first, then relative)
+    var dir = fs.openDirAbsolute(clean_dir, .{ .iterate = true }) catch blk: {
+        break :blk fs.cwd().openDir(clean_dir, .{ .iterate = true }) catch |err| {
+            stdout.print("Error: could not open directory: {s} ({s})\n", .{ clean_dir, @errorName(err) }) catch {};
+            stdout_writer.interface.flush() catch {};
+            return EXIT_REQUIREMENTS;
+        };
+    };
+    defer dir.close();
+
+    // Iterate and clean files
+    var iter = dir.iterate();
+    var cleaned: usize = 0;
+    var skipped: usize = 0;
+    var total_input: usize = 0;
+    var total_output: usize = 0;
+
+    while (iter.next() catch null) |entry| {
+        if (entry.kind != .file) continue;
+
+        // Only process .md and .jsonl files (skip already cleaned .toon files)
+        const is_md = mem.endsWith(u8, entry.name, ".md");
+        const is_jsonl = mem.endsWith(u8, entry.name, ".jsonl");
+        const is_toon = mem.endsWith(u8, entry.name, ".toon");
+        const is_cleaned = mem.endsWith(u8, entry.name, ".cleaned.jsonl");
+
+        if (is_toon or is_cleaned) {
+            skipped += 1;
+            continue;
+        }
+        if (!is_md and !is_jsonl) {
+            skipped += 1;
+            continue;
+        }
+
+        // Generate output path
+        const input_path = fs.path.join(allocator, &.{ clean_dir, entry.name }) catch continue;
+        defer allocator.free(input_path);
+
+        const output_path = ralph.log_cleaner.generateCleanedPath(allocator, input_path, .toon) catch continue;
+        defer allocator.free(output_path);
+
+        // Clean the file
+        const stats = ralph.log_cleaner.cleanSessionFile(allocator, input_path, output_path, .{}) catch |clean_err| {
+            stdout.print("  [FAIL] {s}: {s}\n", .{ entry.name, @errorName(clean_err) }) catch {};
+            continue;
+        };
+
+        stdout.print("  [OK] {s} -> {d} lines (was {d})\n", .{ entry.name, stats.output_lines, stats.input_lines }) catch {};
+        cleaned += 1;
+        total_input += stats.input_lines;
+        total_output += stats.output_lines;
+    }
+
+    stdout.print("\nCleaned {d} files, skipped {d}\n", .{ cleaned, skipped }) catch {};
+    if (cleaned > 0) {
+        const ratio = if (total_output > 0) total_input / total_output else 0;
+        stdout.print("Total: {d} -> {d} lines ({d}x reduction)\n", .{ total_input, total_output, ratio }) catch {};
+    }
+    stdout_writer.interface.flush() catch {};
+
+    return EXIT_SUCCESS;
 }
 
 fn cleanLogFile(allocator: mem.Allocator, output_file: []const u8, ui: *ralph.UI) void {
