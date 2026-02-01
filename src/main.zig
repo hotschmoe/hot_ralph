@@ -138,6 +138,19 @@ fn run() !u8 {
     // Ensure output directory exists
     try ralph.config.ensureOutputDir(&config);
 
+    // Construct stop file path for graceful exit detection
+    const STOP_FILE_NAME = "stop";
+    const stop_file_path = try fs.path.join(allocator, &.{ config.output_dir, STOP_FILE_NAME });
+    defer allocator.free(stop_file_path);
+
+    // Clear any stale stop file from previous run
+    fs.deleteFileAbsolute(stop_file_path) catch |del_err| switch (del_err) {
+        error.FileNotFound => {},
+        else => {
+            try ui.info("Warning: Could not clear stale stop file");
+        },
+    };
+
     // Load existing state (if any)
     const state_path = try config.statePath();
     defer allocator.free(state_path);
@@ -177,12 +190,10 @@ fn run() !u8 {
     var exit_monitor = ralph.ExitMonitor.init(allocator);
     defer exit_monitor.deinit();
 
-    // Start monitoring in background (only when not in auto mode)
-    if (!config.auto_mode) {
-        exit_monitor.start() catch {
-            // Non-fatal: continue without exit monitoring
-        };
-    }
+    // Start monitoring in background (always, for both auto and non-auto mode)
+    exit_monitor.start() catch {
+        // Non-fatal: continue without exit monitoring
+    };
 
     // Plan mode: batch execute related tasks
     if (config.plan_mode) {
@@ -469,12 +480,12 @@ fn run() !u8 {
             try runIntrospection(allocator, &config, &claude, &state, state_path, &ui);
         }
 
-        // Countdown between tasks (if not in auto mode)
-        if (!config.auto_mode) {
-            const should_continue = try ui.countdownWithExitCheck(5, &exit_monitor);
-            if (!should_continue) {
-                break;
-            }
+        // Countdown between tasks (always, allows graceful exit in auto mode)
+        const should_continue = try ui.countdownWithExitCheck(5, &exit_monitor, stop_file_path);
+        if (!should_continue) {
+            // Delete stop file if it was the trigger
+            fs.deleteFileAbsolute(stop_file_path) catch {};
+            break;
         }
     }
 

@@ -267,39 +267,49 @@ pub const UI = struct {
         return true;
     }
 
-    pub fn countdownWithExitCheck(self: *UI, seconds: u32, exit_monitor: anytype) !bool {
-        if (self.auto_mode) {
-            return true;
-        }
-
+    pub fn countdownWithExitCheck(self: *UI, seconds: u32, exit_monitor: anytype, stop_file_path: []const u8) !bool {
         var remaining: u32 = seconds;
         while (remaining > 0) : (remaining -= 1) {
-            // Check for exit request
+            // Check for 'e' key via exit monitor
             if (exit_monitor.shouldExit()) {
                 var writer = self.getWriter();
-                try writer.interface.writeAll("\r                                                        \r");
+                try writer.interface.writeAll("\r                                                                    \r");
                 self.flushWriter(&writer);
                 return false;
             }
 
+            // Check for stop file
+            if (stopFileExists(stop_file_path)) {
+                var writer = self.getWriter();
+                try writer.interface.writeAll("\rStop file detected. Exiting after current task...\n");
+                self.flushWriter(&writer);
+                return false;
+            }
+
+            // Update countdown display
             var writer = self.getWriter();
-            try writer.interface.print("\rNext task in {d} seconds... (press 'e' to exit after current task)", .{remaining});
+            try writer.interface.print("\rNext task in {d}s... (press 'e' or touch .hot_ralph/stop to exit)", .{remaining});
             self.flushWriter(&writer);
 
             std.Thread.sleep(std.time.ns_per_s);
         }
 
         // Final check before continuing
-        if (exit_monitor.shouldExit()) {
+        if (exit_monitor.shouldExit() or stopFileExists(stop_file_path)) {
             var writer = self.getWriter();
-            try writer.interface.writeAll("\r                                                        \r");
+            try writer.interface.writeAll("\r                                                                    \r");
             self.flushWriter(&writer);
             return false;
         }
 
         var writer = self.getWriter();
-        try writer.interface.writeAll("\r                                                        \r");
+        try writer.interface.writeAll("\r                                                                    \r");
         self.flushWriter(&writer);
+        return true;
+    }
+
+    fn stopFileExists(path: []const u8) bool {
+        std.fs.accessAbsolute(path, .{}) catch return false;
         return true;
     }
 
