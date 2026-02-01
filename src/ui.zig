@@ -268,25 +268,20 @@ pub const UI = struct {
     }
 
     pub fn countdownWithExitCheck(self: *UI, seconds: u32, exit_monitor: anytype, stop_file_path: []const u8) !bool {
+        const clear_line = "\r                                                                    \r";
+
         var remaining: u32 = seconds;
         while (remaining > 0) : (remaining -= 1) {
-            // Check for 'e' key via exit monitor
             if (exit_monitor.shouldExit()) {
-                var writer = self.getWriter();
-                try writer.interface.writeAll("\r                                                                    \r");
-                self.flushWriter(&writer);
+                try self.writeAndFlush(clear_line);
                 return false;
             }
 
-            // Check for stop file
-            if (stopFileExists(stop_file_path)) {
-                var writer = self.getWriter();
-                try writer.interface.writeAll("\rStop file detected. Exiting after current task...\n");
-                self.flushWriter(&writer);
+            if (fileExists(stop_file_path)) {
+                try self.writeAndFlush("\rStop file detected. Exiting after current task...\n");
                 return false;
             }
 
-            // Update countdown display
             var writer = self.getWriter();
             try writer.interface.print("\rNext task in {d}s... (press 'e' or touch .hot_ralph/stop to exit)", .{remaining});
             self.flushWriter(&writer);
@@ -295,20 +290,18 @@ pub const UI = struct {
         }
 
         // Final check before continuing
-        if (exit_monitor.shouldExit() or stopFileExists(stop_file_path)) {
-            var writer = self.getWriter();
-            try writer.interface.writeAll("\r                                                                    \r");
-            self.flushWriter(&writer);
-            return false;
-        }
-
-        var writer = self.getWriter();
-        try writer.interface.writeAll("\r                                                                    \r");
-        self.flushWriter(&writer);
-        return true;
+        const should_exit = exit_monitor.shouldExit() or fileExists(stop_file_path);
+        try self.writeAndFlush(clear_line);
+        return !should_exit;
     }
 
-    fn stopFileExists(path: []const u8) bool {
+    fn writeAndFlush(self: *UI, text: []const u8) !void {
+        var writer = self.getWriter();
+        try writer.interface.writeAll(text);
+        self.flushWriter(&writer);
+    }
+
+    fn fileExists(path: []const u8) bool {
         std.fs.accessAbsolute(path, .{}) catch return false;
         return true;
     }

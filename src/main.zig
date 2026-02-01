@@ -139,17 +139,11 @@ fn run() !u8 {
     try ralph.config.ensureOutputDir(&config);
 
     // Construct stop file path for graceful exit detection
-    const STOP_FILE_NAME = "stop";
-    const stop_file_path = try fs.path.join(allocator, &.{ config.output_dir, STOP_FILE_NAME });
+    const stop_file_path = try fs.path.join(allocator, &.{ config.output_dir, "stop" });
     defer allocator.free(stop_file_path);
 
     // Clear any stale stop file from previous run
-    fs.deleteFileAbsolute(stop_file_path) catch |del_err| switch (del_err) {
-        error.FileNotFound => {},
-        else => {
-            try ui.info("Warning: Could not clear stale stop file");
-        },
-    };
+    clearStopFile(stop_file_path, &ui);
 
     // Load existing state (if any)
     const state_path = try config.statePath();
@@ -480,11 +474,10 @@ fn run() !u8 {
             try runIntrospection(allocator, &config, &claude, &state, state_path, &ui);
         }
 
-        // Countdown between tasks (always, allows graceful exit in auto mode)
+        // Countdown between tasks (allows graceful exit in auto mode)
         const should_continue = try ui.countdownWithExitCheck(5, &exit_monitor, stop_file_path);
         if (!should_continue) {
-            // Delete stop file if it was the trigger
-            fs.deleteFileAbsolute(stop_file_path) catch {};
+            clearStopFile(stop_file_path, &ui);
             break;
         }
     }
@@ -819,6 +812,14 @@ fn syncBeadsAndExit(
     };
 
     ralph.State.clear(state_path) catch {};
+}
+
+fn clearStopFile(stop_file_path: []const u8, ui: *ralph.UI) void {
+    fs.deleteFileAbsolute(stop_file_path) catch |err| {
+        if (err != error.FileNotFound) {
+            ui.info("Warning: Could not clear stop file") catch {};
+        }
+    };
 }
 
 fn runIntrospection(
