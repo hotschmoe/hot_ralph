@@ -14,6 +14,7 @@ pub const claude = @import("claude.zig");
 pub const git = @import("git.zig");
 pub const scanner = @import("scanner.zig");
 pub const exit_monitor = @import("exit_monitor.zig");
+pub const log_cleaner = @import("log_cleaner.zig");
 
 // Re-export commonly used types
 pub const Config = config.Config;
@@ -52,6 +53,11 @@ pub const SimplificationPrompt = prompt.SimplificationPrompt;
 pub const FinalReviewPrompt = prompt.FinalReviewPrompt;
 pub const IntrospectionPrompt = prompt.IntrospectionPrompt;
 pub const PlanModePrompt = prompt.PlanModePrompt;
+
+pub const LogCleaner = log_cleaner;
+pub const CleanerOptions = log_cleaner.CleanerOptions;
+pub const CleanStats = log_cleaner.CleanStats;
+pub const OutputFormat = log_cleaner.OutputFormat;
 
 // Version info
 pub const version = "0.3.0";

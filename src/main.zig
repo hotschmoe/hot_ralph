@@ -403,6 +403,11 @@ fn run() !u8 {
             .success => |s| {
                 allocator.free(s.response_text);
                 try ui.statusFmt("Output saved to: {s}", .{s.output_file});
+
+                // Clean the log file unless --no-clean is set
+                if (!config.no_clean) {
+                    cleanLogFile(allocator, s.output_file, &ui);
+                }
             },
         }
 
@@ -758,6 +763,11 @@ fn runPlanMode(
         .success => |s| {
             allocator.free(s.response_text);
             try ui.statusFmt("Plan output saved to: {s}", .{s.output_file});
+
+            // Clean the log file unless --no-clean is set
+            if (!config.no_clean) {
+                cleanLogFile(allocator, s.output_file, ui);
+            }
         },
     }
 
@@ -872,6 +882,25 @@ fn maybeRunIntrospection(
     if (!config.introspection_enabled) return;
     if (state.tasks_since_introspection < INTROSPECTION_INTERVAL) return;
     try runIntrospection(allocator, config, claude, state, state_path, ui);
+}
+
+fn cleanLogFile(allocator: mem.Allocator, output_file: []const u8, ui: *ralph.UI) void {
+    const clean_path = ralph.log_cleaner.generateCleanedPath(allocator, output_file, .toon) catch {
+        ui.info("Log cleaning skipped (path error)") catch {};
+        return;
+    };
+    defer allocator.free(clean_path);
+
+    const stats = ralph.log_cleaner.cleanSessionFile(allocator, output_file, clean_path, .{}) catch |err| {
+        ui.statusFmt("Log cleaning failed: {s}", .{@errorName(err)}) catch {};
+        return;
+    };
+
+    ui.statusFmt("Log cleaned: {d} -> {d} lines ({s})", .{
+        stats.input_lines,
+        stats.output_lines,
+        clean_path,
+    }) catch {};
 }
 
 fn runIntrospection(

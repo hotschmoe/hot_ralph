@@ -27,6 +27,7 @@ pub const Config = struct {
     introspection_enabled: bool,
     plan_mode: bool,
     plan_mode_count: usize,
+    no_clean: bool,
 
     const OUTPUT_DIR_NAME = ".hot_ralph";
 
@@ -51,6 +52,7 @@ pub const Config = struct {
             .introspection_enabled = args.introspection_enabled,
             .plan_mode = args.plan_mode,
             .plan_mode_count = args.plan_mode_count,
+            .no_clean = args.no_clean,
         };
     }
 
@@ -75,6 +77,7 @@ pub const Args = struct {
     introspection_enabled: bool,
     plan_mode: bool,
     plan_mode_count: usize,
+    no_clean: bool,
 
     const DEFAULT_PLAN_MODE_COUNT: usize = 5;
 
@@ -95,6 +98,7 @@ pub const Args = struct {
             .introspection_enabled = false,
             .plan_mode = false,
             .plan_mode_count = DEFAULT_PLAN_MODE_COUNT,
+            .no_clean = false,
         };
 
         var pending_arg: ?[]const u8 = null;
@@ -128,6 +132,8 @@ pub const Args = struct {
                         pending_arg = next;
                     }
                 }
+            } else if (mem.eql(u8, arg, "--no-clean")) {
+                result.no_clean = true;
             } else if (!mem.startsWith(u8, arg, "-")) {
                 result.project_dir = arg;
             }
@@ -216,6 +222,7 @@ pub fn printHelp(writer: anytype) !void {
         \\    -q, --quiet         Quiet mode: minimal output
         \\    -i, --introspection Enable periodic introspection after every 5 tasks
         \\    -p, --planmode [N]  Plan mode: batch N related tasks into single session (default: 5)
+        \\    --no-clean          Skip automatic log cleaning after Claude runs
         \\
         \\REQUIREMENTS:
         \\    Project directory must contain:
@@ -262,6 +269,7 @@ test "Args.parse - default values" {
         .introspection_enabled = false,
         .plan_mode = false,
         .plan_mode_count = Args.DEFAULT_PLAN_MODE_COUNT,
+        .no_clean = false,
     };
     try std.testing.expect(args.project_dir == null);
     try std.testing.expect(!args.auto_mode);
@@ -273,6 +281,7 @@ test "Args.parse - default values" {
     try std.testing.expect(!args.introspection_enabled);
     try std.testing.expect(!args.plan_mode);
     try std.testing.expectEqual(@as(usize, 5), args.plan_mode_count);
+    try std.testing.expect(!args.no_clean);
 }
 
 test "Config.init - with project dir" {
@@ -288,6 +297,7 @@ test "Config.init - with project dir" {
         .introspection_enabled = false,
         .plan_mode = false,
         .plan_mode_count = 7,
+        .no_clean = false,
     };
 
     var config = try Config.init(allocator, args);
