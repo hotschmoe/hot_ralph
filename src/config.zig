@@ -84,14 +84,6 @@ pub const Args = struct {
 
         _ = args_iter.next(); // skip program name
 
-        // Collect remaining args for two-pass parsing
-        var collected: std.ArrayList([]const u8) = .empty;
-        defer collected.deinit(allocator);
-
-        while (args_iter.next()) |arg| {
-            try collected.append(allocator, arg);
-        }
-
         var result = Args{
             .project_dir = null,
             .auto_mode = false,
@@ -105,9 +97,12 @@ pub const Args = struct {
             .plan_mode_count = DEFAULT_PLAN_MODE_COUNT,
         };
 
-        var i: usize = 0;
-        while (i < collected.items.len) : (i += 1) {
-            const arg = collected.items[i];
+        var pending_arg: ?[]const u8 = null;
+
+        while (true) {
+            const arg = pending_arg orelse args_iter.next() orelse break;
+            pending_arg = null;
+
             if (mem.eql(u8, arg, "--help") or mem.eql(u8, arg, "-h")) {
                 result.help_requested = true;
             } else if (mem.eql(u8, arg, "--version") or mem.eql(u8, arg, "-V")) {
@@ -125,15 +120,12 @@ pub const Args = struct {
             } else if (mem.eql(u8, arg, "--planmode") or mem.eql(u8, arg, "-p")) {
                 result.plan_mode = true;
                 // Check if next arg is a number for plan_mode_count
-                if (i + 1 < collected.items.len) {
-                    const next = collected.items[i + 1];
-                    if (!mem.startsWith(u8, next, "-")) {
-                        if (std.fmt.parseInt(usize, next, 10)) |count| {
-                            result.plan_mode_count = count;
-                            i += 1; // consume the count arg
-                        } else |_| {
-                            // Not a number, leave for project_dir handling
-                        }
+                if (args_iter.next()) |next| {
+                    if (std.fmt.parseInt(usize, next, 10)) |count| {
+                        result.plan_mode_count = count;
+                    } else |_| {
+                        // Not a number, save for next iteration
+                        pending_arg = next;
                     }
                 }
             } else if (!mem.startsWith(u8, arg, "-")) {
