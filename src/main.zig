@@ -649,17 +649,6 @@ fn runClaudeWithRetry(
     };
 }
 
-fn freeRunResult(allocator: mem.Allocator, result: ralph.RunResult) void {
-    switch (result) {
-        .success => |s| {
-            allocator.free(s.response_text);
-            allocator.free(s.raw_json);
-        },
-        .failure => |f| allocator.free(f.message),
-        .interrupted => {},
-    }
-}
-
 fn runPlanMode(
     allocator: mem.Allocator,
     config: *const ralph.Config,

@@ -12,6 +12,7 @@ const mem = std.mem;
 const fs = std.fs;
 const Allocator = mem.Allocator;
 const toon = @import("toon");
+const scanner = @import("scanner.zig");
 
 pub const OutputFormat = enum {
     jsonl,
@@ -255,7 +256,7 @@ pub fn generateLogPath(
     var remaining_days = days_since_epoch;
     var year: u16 = 1970;
     while (true) {
-        const days_in_year: u64 = if (isLeapYear(@intCast(year))) 366 else 365;
+        const days_in_year: u64 = if (scanner.isLeapYear(@intCast(year))) 366 else 365;
         if (remaining_days < days_in_year) break;
         remaining_days -= days_in_year;
         year += 1;
@@ -265,7 +266,7 @@ pub fn generateLogPath(
     var month: u8 = 1;
     for (days_in_month, 0..) |days, i| {
         var d = days;
-        if (i == 1 and isLeapYear(@intCast(year))) d += 1;
+        if (i == 1 and scanner.isLeapYear(@intCast(year))) d += 1;
         if (remaining_days < d) break;
         remaining_days -= d;
         month += 1;
@@ -280,13 +281,6 @@ pub fn generateLogPath(
     defer allocator.free(filename);
 
     return fs.path.join(allocator, &.{ output_dir, filename });
-}
-
-fn isLeapYear(year: i32) bool {
-    if (@mod(year, 400) == 0) return true;
-    if (@mod(year, 100) == 0) return false;
-    if (@mod(year, 4) == 0) return true;
-    return false;
 }
 
 /// One-shot: raw JSON -> clean (filter noise) -> save to .md file
@@ -442,11 +436,4 @@ test "generateLogPath creates timestamped path" {
     try std.testing.expect(std.mem.endsWith(u8, path, "_task_abc.md"));
     // Should have timestamp portion: 8 digits + _ + 6 digits = 15 chars
     try std.testing.expect(path.len >= "/output/".len + 15 + "_task_abc.md".len);
-}
-
-test "isLeapYear" {
-    try std.testing.expect(isLeapYear(2000)); // divisible by 400
-    try std.testing.expect(!isLeapYear(1900)); // divisible by 100 but not 400
-    try std.testing.expect(isLeapYear(2024)); // divisible by 4
-    try std.testing.expect(!isLeapYear(2023)); // not divisible by 4
 }

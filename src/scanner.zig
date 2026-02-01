@@ -237,7 +237,7 @@ fn epochDayFromDate(year: i32, month: u8, day: u8) ?i64 {
     return days;
 }
 
-fn isLeapYear(year: i32) bool {
+pub fn isLeapYear(year: i32) bool {
     if (@mod(year, 400) == 0) return true;
     if (@mod(year, 100) == 0) return false;
     if (@mod(year, 4) == 0) return true;
