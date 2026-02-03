@@ -19,7 +19,7 @@ pub const Scanner = struct {
         };
     }
 
-    /// Scans .hot_ralph/ for files matching *_task_*.md pattern.
+    /// Scans .hot_ralph/ for files matching *_task_*.md or other log patterns.
     /// Returns content of the most recent N task log files sorted by timestamp descending.
     pub fn scanTaskLogs(self: *Scanner, count: usize) ![][]const u8 {
         const hot_ralph_dir = try fs.path.join(self.allocator, &.{ self.base_dir, ".hot_ralph" });
@@ -43,7 +43,7 @@ pub const Scanner = struct {
         while (try iter.next()) |entry| {
             if (entry.kind != .file) continue;
             if (!mem.endsWith(u8, entry.name, ".md")) continue;
-            if (!matchesTaskLogPattern(entry.name)) continue;
+            if (!matchesLogPattern(entry.name)) continue;
 
             const timestamp = parseTimestamp(entry.name) orelse continue;
 
@@ -64,33 +64,26 @@ pub const Scanner = struct {
             }
         }.lessThan);
 
-        // Take only the first 'count' entries
+        // Take only the first 'count' entries and load their content
         const take_count = @min(count, entries.items.len);
-        var result = try self.allocator.alloc([]const u8, take_count);
-        errdefer self.allocator.free(result);
 
-        var loaded: usize = 0;
+        var result = std.ArrayList([]const u8).initCapacity(self.allocator, take_count) catch {
+            return &.{};
+        };
         errdefer {
-            for (result[0..loaded]) |content| {
-                self.allocator.free(content);
-            }
+            for (result.items) |content| self.allocator.free(content);
+            result.deinit(self.allocator);
         }
 
         for (entries.items[0..take_count]) |entry| {
-            const file_path = try fs.path.join(self.allocator, &.{ hot_ralph_dir, entry.filename });
+            const file_path = fs.path.join(self.allocator, &.{ hot_ralph_dir, entry.filename }) catch continue;
             defer self.allocator.free(file_path);
 
             const content = self.readFileLimited(file_path, 1024 * 1024) catch continue;
-            result[loaded] = content;
-            loaded += 1;
+            result.appendAssumeCapacity(content);
         }
 
-        // Shrink if some files couldn't be loaded
-        if (loaded < take_count) {
-            result = self.allocator.realloc(result, loaded) catch result[0..loaded];
-        }
-
-        return result[0..loaded];
+        return result.toOwnedSlice(self.allocator) catch &.{};
     }
 
     /// Scans .claude/skills/ for *.md files.
@@ -205,12 +198,15 @@ pub fn parseTimestamp(filename: []const u8) ?i64 {
     return epoch_day * 86400 + day_seconds;
 }
 
-/// Checks if filename matches pattern *_task_*.md
-pub fn matchesTaskLogPattern(filename: []const u8) bool {
+/// Checks if filename matches log patterns (task, plan_mode, simplify, introspection)
+pub fn matchesLogPattern(filename: []const u8) bool {
     if (!mem.endsWith(u8, filename, ".md")) return false;
 
-    // Look for "_task_" anywhere in the filename
-    return mem.indexOf(u8, filename, "_task_") != null;
+    // Match various log types: task, plan_mode, plan_simplify, introspection
+    return mem.indexOf(u8, filename, "_task_") != null or
+        mem.indexOf(u8, filename, "_plan_") != null or
+        mem.indexOf(u8, filename, "_simplify") != null or
+        mem.indexOf(u8, filename, "_introspection") != null;
 }
 
 /// Calculates days since Unix epoch for a given date.
@@ -241,7 +237,7 @@ fn epochDayFromDate(year: i32, month: u8, day: u8) ?i64 {
     return days;
 }
 
-fn isLeapYear(year: i32) bool {
+pub fn isLeapYear(year: i32) bool {
     if (@mod(year, 400) == 0) return true;
     if (@mod(year, 100) == 0) return false;
     if (@mod(year, 4) == 0) return true;
@@ -271,17 +267,20 @@ test "parseTimestamp - missing underscore separator" {
     try std.testing.expect(parseTimestamp("20250130X143022_task.md") == null);
 }
 
-test "matchesTaskLogPattern - valid patterns" {
-    try std.testing.expect(matchesTaskLogPattern("20250130_143022_task_abc.md"));
-    try std.testing.expect(matchesTaskLogPattern("anything_task_anything.md"));
-    try std.testing.expect(matchesTaskLogPattern("_task_.md"));
+test "matchesLogPattern - valid patterns" {
+    try std.testing.expect(matchesLogPattern("20250130_143022_task_abc.md"));
+    try std.testing.expect(matchesLogPattern("20250130_143022_plan_mode.md"));
+    try std.testing.expect(matchesLogPattern("20250130_143022_plan_simplify.md"));
+    try std.testing.expect(matchesLogPattern("20250130_143022_introspection.md"));
+    try std.testing.expect(matchesLogPattern("anything_task_anything.md"));
 }
 
-test "matchesTaskLogPattern - invalid patterns" {
-    try std.testing.expect(!matchesTaskLogPattern("task.md"));
-    try std.testing.expect(!matchesTaskLogPattern("20250130_143022_abc.md"));
-    try std.testing.expect(!matchesTaskLogPattern("_task_.txt"));
-    try std.testing.expect(!matchesTaskLogPattern("notask.md"));
+test "matchesLogPattern - invalid patterns" {
+    try std.testing.expect(!matchesLogPattern("task.md"));
+    try std.testing.expect(!matchesLogPattern("20250130_143022_abc.md"));
+    try std.testing.expect(!matchesLogPattern("_task_.txt"));
+    try std.testing.expect(!matchesLogPattern("notask.md"));
+    try std.testing.expect(!matchesLogPattern("20250130_143022_task_abc.toon")); // old format
 }
 
 test "epochDayFromDate - basic calculation" {

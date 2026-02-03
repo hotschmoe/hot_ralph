@@ -46,12 +46,62 @@ pub const UI = struct {
         };
     }
 
+    fn writeSegments(w: anytype, segments: []const rich.Segment) !void {
+        for (segments) |segment| {
+            if (segment.control) |ctrl| {
+                try ctrl.toEscapeSequence(w);
+            } else if (segment.style) |style| {
+                try style.renderAnsi(.truecolor, w);
+                try w.writeAll(segment.text);
+                try rich.Style.renderReset(w);
+            } else {
+                try w.writeAll(segment.text);
+            }
+        }
+    }
+
     fn getWriter(self: *UI) fs.File.Writer {
         return self.stdout.writer(&self.stdout_buf);
     }
 
     fn flushWriter(_: *UI, writer: *fs.File.Writer) void {
         writer.interface.flush() catch {};
+    }
+
+    const BorderStyle = enum { rounded, double };
+
+    fn renderStyledPanel(
+        self: *UI,
+        w: anytype,
+        body: []const u8,
+        title: []const u8,
+        border: BorderStyle,
+        width: usize,
+    ) !void {
+        var styled_text = rich.Text.fromMarkup(self.allocator, body) catch {
+            var panel = rich.renderables.Panel.fromText(self.allocator, body);
+            panel = panel.withTitle(title);
+            panel = switch (border) {
+                .rounded => panel.rounded(),
+                .double => panel.double(),
+            };
+            const segments = try panel.render(width, self.allocator);
+            defer self.allocator.free(segments);
+            try writeSegments(w, segments);
+            return;
+        };
+        defer styled_text.deinit();
+
+        var panel = rich.renderables.Panel.fromStyledText(self.allocator, styled_text);
+        panel = panel.withTitle(title);
+        panel = switch (border) {
+            .rounded => panel.rounded(),
+            .double => panel.double(),
+        };
+
+        const segments = try panel.render(width, self.allocator);
+        defer self.allocator.free(segments);
+        try writeSegments(w, segments);
     }
 
     pub fn displayTask(self: *UI, task: Task, ready_count: usize, blocked_count: usize) !void {
@@ -110,17 +160,7 @@ pub const UI = struct {
         const title = try std.fmt.allocPrint(self.allocator, "TASK: {s} [{s}]", .{ task.title, task.id });
         defer self.allocator.free(title);
 
-        // Create and render the panel
-        var panel = rich.renderables.Panel.fromText(self.allocator, body_parts.items);
-        panel = panel.withTitle(title).rounded();
-
-        const segments = try panel.render(80, self.allocator);
-        defer self.allocator.free(segments);
-
-        for (segments) |segment| {
-            try w.writeAll(segment.text);
-        }
-
+        try self.renderStyledPanel(w, body_parts.items, title, .rounded, 80);
         self.flushWriter(&writer);
     }
 
@@ -227,39 +267,42 @@ pub const UI = struct {
         return true;
     }
 
-    pub fn countdownWithExitCheck(self: *UI, seconds: u32, exit_monitor: anytype) !bool {
-        if (self.auto_mode) {
-            return true;
-        }
+    pub fn countdownWithExitCheck(self: *UI, seconds: u32, exit_monitor: anytype, stop_file_path: []const u8) !bool {
+        const clear_line = "\r                                                                    \r";
 
         var remaining: u32 = seconds;
         while (remaining > 0) : (remaining -= 1) {
-            // Check for exit request
             if (exit_monitor.shouldExit()) {
-                var writer = self.getWriter();
-                try writer.interface.writeAll("\r                                                        \r");
-                self.flushWriter(&writer);
+                try self.writeAndFlush(clear_line);
+                return false;
+            }
+
+            if (fileExists(stop_file_path)) {
+                try self.writeAndFlush("\rStop file detected. Exiting after current task...\n");
                 return false;
             }
 
             var writer = self.getWriter();
-            try writer.interface.print("\rNext task in {d} seconds... (press 'e' to exit after current task)", .{remaining});
+            try writer.interface.print("\rNext task in {d}s... (press 'e' or touch .hot_ralph/stop to exit)", .{remaining});
             self.flushWriter(&writer);
 
             std.Thread.sleep(std.time.ns_per_s);
         }
 
         // Final check before continuing
-        if (exit_monitor.shouldExit()) {
-            var writer = self.getWriter();
-            try writer.interface.writeAll("\r                                                        \r");
-            self.flushWriter(&writer);
-            return false;
-        }
+        const should_exit = exit_monitor.shouldExit() or fileExists(stop_file_path);
+        try self.writeAndFlush(clear_line);
+        return !should_exit;
+    }
 
+    fn writeAndFlush(self: *UI, text: []const u8) !void {
         var writer = self.getWriter();
-        try writer.interface.writeAll("\r                                                        \r");
+        try writer.interface.writeAll(text);
         self.flushWriter(&writer);
+    }
+
+    fn fileExists(path: []const u8) bool {
+        std.fs.accessAbsolute(path, .{}) catch return false;
         return true;
     }
 
@@ -324,6 +367,14 @@ pub const UI = struct {
     }
 
     pub fn displayAllTasks(self: *UI, tasks: []const Task) !void {
+        try self.displayTaskTable(tasks, "All Ready Tasks", null);
+    }
+
+    pub fn displayPlanOverview(self: *UI, tasks: []const Task) !void {
+        try self.displayTaskTable(tasks, "Plan Mode: Batch Execution", tasks.len);
+    }
+
+    fn displayTaskTable(self: *UI, tasks: []const Task, title: []const u8, show_total: ?usize) !void {
         if (self.quiet) return;
 
         var writer = self.getWriter();
@@ -331,7 +382,6 @@ pub const UI = struct {
 
         try w.writeAll("\n");
 
-        // Create table with columns using builder pattern
         var table = rich.renderables.Table.init(self.allocator);
         defer table.deinit();
 
@@ -341,27 +391,34 @@ pub const UI = struct {
         _ = table.withColumn(rich.renderables.Column.init("Pri").withJustify(.center));
         _ = table.withColumn(rich.renderables.Column.init("Tags").withStyle(rich.Style.empty.dim()));
 
+        // Collect all allocated strings to free after render
+        var allocated_strings: std.ArrayList([]const u8) = .empty;
+        defer {
+            for (allocated_strings.items) |s| {
+                self.allocator.free(s);
+            }
+            allocated_strings.deinit(self.allocator);
+        }
+
         for (tasks, 0..) |task, i| {
-            // Build row number
             const num = std.fmt.allocPrint(self.allocator, "{d}", .{i + 1}) catch continue;
-            defer self.allocator.free(num);
+            allocated_strings.append(self.allocator, num) catch continue;
 
-            // Build priority string
             const pri = std.fmt.allocPrint(self.allocator, "{d}", .{task.priority}) catch continue;
-            defer self.allocator.free(pri);
+            allocated_strings.append(self.allocator, pri) catch continue;
 
-            // Build tags string
             var tags_buf: std.ArrayList(u8) = .empty;
-            defer tags_buf.deinit(self.allocator);
             for (task.tags, 0..) |tag, j| {
                 if (j > 0) tags_buf.appendSlice(self.allocator, ", ") catch {};
                 tags_buf.appendSlice(self.allocator, tag) catch {};
             }
             const tags_str = tags_buf.toOwnedSlice(self.allocator) catch "";
-            defer if (tags_str.len > 0) self.allocator.free(tags_str);
+            if (tags_str.len > 0) {
+                allocated_strings.append(self.allocator, tags_str) catch {};
+            }
+            tags_buf.deinit(self.allocator);
 
-            // Truncate title if too long
-            const max_title_len: usize = 40;
+            const max_title_len: usize = 45;
             const title_display = if (task.title.len > max_title_len)
                 task.title[0..max_title_len]
             else
@@ -371,21 +428,43 @@ pub const UI = struct {
         }
 
         _ = table.withBoxStyle(rich.box.BoxStyle.rounded);
-        _ = table.withTitle("All Ready Tasks");
+        _ = table.withTitle(title);
 
         const segments = table.render(100, self.allocator) catch {
-            try w.writeAll("=== All Ready Tasks ===\n");
+            try w.print("=== {s} ===\n", .{title});
+            for (tasks, 0..) |task, i| {
+                try w.print("{d}. [{s}] {s}\n", .{ i + 1, task.id, task.title });
+            }
             self.flushWriter(&writer);
             return;
         };
         defer self.allocator.free(segments);
 
-        for (segments) |segment| {
-            try w.writeAll(segment.text);
+        try writeSegments(w, segments);
+
+        if (show_total) |total| {
+            try w.print("\nTotal tasks in plan: {d}\n", .{total});
+        } else {
+            try w.writeAll("\n");
+        }
+        self.flushWriter(&writer);
+    }
+
+    pub fn promptPlanApproval(self: *UI) !bool {
+        if (self.auto_mode) {
+            return true;
         }
 
-        try w.writeAll("\n");
+        var writer = self.getWriter();
+        try writer.interface.writeAll("\nExecute this plan? [Y/n] ");
         self.flushWriter(&writer);
+
+        const choice = try self.readSingleChar();
+
+        return switch (choice) {
+            'n', 'N' => false,
+            else => true,
+        };
     }
 
     pub fn displayComplete(self: *UI, tasks_completed: usize) !void {
@@ -394,7 +473,6 @@ pub const UI = struct {
 
         try w.writeAll("\n");
 
-        // Build body content
         const body = std.fmt.allocPrint(self.allocator, "[bold green]Tasks completed: {d}[/]", .{tasks_completed}) catch {
             try w.print("=== Session Complete ===\nTasks completed: {d}\n", .{tasks_completed});
             self.flushWriter(&writer);
@@ -402,21 +480,7 @@ pub const UI = struct {
         };
         defer self.allocator.free(body);
 
-        // Create panel with double border
-        var panel = rich.renderables.Panel.fromText(self.allocator, body);
-        panel = panel.withTitle("Session Complete").double();
-
-        const segments = panel.render(50, self.allocator) catch {
-            try w.print("=== Session Complete ===\nTasks completed: {d}\n", .{tasks_completed});
-            self.flushWriter(&writer);
-            return;
-        };
-        defer self.allocator.free(segments);
-
-        for (segments) |segment| {
-            try w.writeAll(segment.text);
-        }
-
+        try self.renderStyledPanel(w, body, "Session Complete", .double, 50);
         self.flushWriter(&writer);
     }
 

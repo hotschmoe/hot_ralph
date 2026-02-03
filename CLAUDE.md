@@ -129,264 +129,173 @@ we love you, Claude! do your best today
 <!-- Add your project's toolchain, architecture, workflows here -->
 <!-- This section will not be touched by haj.sh -->
 
-# rich_zig - Terminal Rich Text Library
+# hot_ralph - Atomic Task Execution with Claude and Beads
 
-A full-featured Zig port of Python's Rich library. Provides beautiful terminal output with styled text, tables, panels, progress bars, trees, and more.
+Automated task runner that pulls work from Beads, executes via Claude CLI, and commits results. Designed for autonomous, incremental project development.
 
-- **Version**: 0.10.0
+- **Version**: 0.5.0
 - **Minimum Zig**: 0.15.2
-- **No external dependencies** - uses only Zig standard library
+- **Dependencies**: rich_zig (terminal UI)
 
 ---
 
 ## Zig Toolchain
 
 ```bash
-zig build              # Build library and executable
-zig build run          # Run the comprehensive demo
-zig build test         # Run all tests
-zig build test -Doptimize=ReleaseSafe  # Test with optimization
-zig fmt src/           # Format before commits
+zig build                    # Build the executable
+zig build run -- --help      # Show help (note: -- separates zig args from program args)
+zig build run -- --dry-run   # Dry run in current directory
+zig build test               # Run all tests
+zig fmt src/                 # Format before commits
 ```
+
+---
+
+## Usage
+
+```bash
+hot_ralph [OPTIONS] [PROJECT_DIR]
+
+# Examples:
+zig build run -- --dry-run                      # Preview mode, current dir
+zig build run -- --dry-run ~/beads_zig/         # Preview mode, specific project
+zig build run -- -a ~/beads_zig/                # Auto mode (no prompts)
+zig build run -- -p ~/beads_zig/                # Plan mode: batch 5 tasks (default)
+zig build run -- -p 10 ~/beads_zig/             # Plan mode: batch 10 tasks
+zig build run -- -p -a ~/beads_zig/             # Plan mode + auto (unattended batch)
+zig build run -- -p 7 --dry-run ~/beads_zig/    # Preview 7-task plan
+```
+
+### Options
+
+| Flag | Long | Description |
+|------|------|-------------|
+| `-a` | `--auto` | Skip all prompts, assume yes |
+| `-p [N]` | `--planmode [N]` | Batch N related tasks (default: 5, e.g. `-p 10` for 10 tasks) |
+| `-i` | `--introspection` | Enable periodic introspection (every 5 tasks) |
+| `-s` | `--silent` | Don't stream Claude responses to terminal |
+| `-q` | `--quiet` | Minimal output |
+| | `--dry-run` | Preview what would be done without executing |
+| `-h` | `--help` | Show help |
+| `-V` | `--version` | Show version |
+
+---
+
+## Project Requirements
+
+Target project must contain:
+
+```
+project/
+  SPEC.md        # Project specification
+  VISION.md      # Project vision
+  TESTING.md     # Testing requirements
+  .beads/        # Beads task tracking (br init)
+  .git/          # Git repository
+```
+
+External commands (must be in PATH):
+- `claude` - Anthropic Claude CLI
+- `br` - Beads Rust CLI
+- `git` - Version control
 
 ---
 
 ## Project Layout
 
 ```
-rich_zig/
-├── build.zig           # Build configuration
-├── build.zig.zon       # Package manifest
-├── src/
-│   ├── root.zig        # Library root (public API)
-│   ├── main.zig        # Demo executable
-│   │
-│   ├── color.zig       # Color types and conversion
-│   ├── style.zig       # Text styling attributes
-│   ├── segment.zig     # Atomic rendering unit
-│   ├── cells.zig       # Unicode width calculation
-│   │
-│   ├── markup.zig      # BBCode-like syntax parsing
-│   ├── text.zig        # Styled text with spans
-│   ├── box.zig         # Box drawing styles
-│   │
-│   ├── terminal.zig    # Terminal detection
-│   ├── console.zig     # Main console interface
-│   ├── emoji.zig       # Emoji support
-│   │
-│   └── renderables/    # Complex UI components
-│       ├── mod.zig
-│       ├── panel.zig
-│       ├── table.zig
-│       ├── rule.zig
-│       ├── progress.zig
-│       ├── tree.zig
-│       ├── padding.zig
-│       ├── align.zig
-│       ├── columns.zig
-│       ├── layout.zig
-│       ├── live.zig
-│       ├── json.zig
-│       └── syntax.zig
-│
-└── .claude/
-    ├── agents/         # Claude agents
-    ├── skills/         # Claude skills (/test)
-    └── settings.local.json
+hot_ralph/
+  build.zig         # Build configuration
+  build.zig.zon     # Package manifest (depends on rich_zig)
+  src/
+    main.zig        # Entry point, main loop, plan mode
+    root.zig        # Library exports
+    config.zig      # Args parsing, requirements check
+    beads.zig       # Beads CLI wrapper
+    claude.zig      # Claude CLI wrapper
+    git.zig         # Git operations
+    prompt.zig      # Prompt templates
+    scanner.zig     # Project file scanner
+    state.zig       # Persistent state (.hot_ralph/state.json)
+    ui.zig          # Terminal UI (uses rich_zig)
+    exit_monitor.zig # Graceful exit on 'e' key
 ```
 
 ---
 
-## Architecture: 4 Phases
+## Execution Flow
 
-**Phase 1 - Core Types**: `color`, `style`, `segment`, `cells`
-**Phase 2 - Text/Markup**: `markup`, `text`, `box`
-**Phase 3 - Terminal/Console**: `terminal`, `console`, `emoji`
-**Phase 4 - Renderables**: `panel`, `table`, `rule`, `progress`, `tree`, `layout`, `json`, `syntax`, etc.
-
-All renderables implement: `render(width, allocator) ![]Segment`
-
----
-
-## Key Patterns
-
-### Explicit Allocators
-
-All public APIs take `allocator: std.mem.Allocator`. No global state.
-
-```zig
-var panel = Panel.fromText(allocator, "content");
-defer panel.deinit();
 ```
-
-### Builder Pattern (Fluent API)
-
-```zig
-const panel = Panel.fromText(alloc, "content")
-    .withTitle("Title")
-    .withWidth(30)
-    .withStyle(box.rounded);
-```
-
-### Error Handling
-
-```zig
-fn loadConfig(path: []const u8) !Config {
-    const file = try fs.open(path);
-    defer file.close();
-    return try parseConfig(file);
-}
-
-// Explicit error sets for API boundaries
-const ConfigError = error{ FileNotFound, ParseFailed, InvalidFormat };
-```
-
-### Optional Handling
-
-```zig
-// Prefer if/orelse over .? when handling is needed
-if (items.get(index)) |item| {
-    // safe to use item
-} else {
-    // handle missing case
-}
-
-// Use orelse for defaults
-const value = optional orelse default_value;
-
-// Use .? only when null is truly unexpected (will panic)
-const ptr = maybe_ptr.?;
-```
-
-### Memory Safety
-
-```zig
-// Always use defer for cleanup
-const buffer = try allocator.alloc(u8, size);
-defer allocator.free(buffer);
-
-// Prefer slices over raw pointers
-fn process(data: []const u8) void { ... }
+1. Parse args, load config
+2. Check requirements (files, commands)
+3. Load or resume state
+4. Main loop (or plan mode):
+   a. Get next ready task from beads
+   b. Display task, prompt for execution
+   c. Claim task, run Claude with prompt
+   d. On success: complete task, run simplification pass
+   e. Git commit changes
+   f. Periodic introspection (if enabled)
+5. Final sync and review
 ```
 
 ---
 
-## Bug Severity
+## Exit Codes
 
-### Critical - Must Fix Immediately
-
-- `.?` on null (panics)
-- `unreachable` reached at runtime
-- Index out of bounds
-- Integer overflow in release builds (undefined behavior)
-- Use-after-free or double-free
-- Memory leaks in long-running paths
-
-### Important - Fix Before Merge
-
-- Missing error handling (`try` without proper catch/return)
-- `catch unreachable` without justification
-- Ignoring return values from `!T` functions
-- Race conditions in threaded code
-
-### Contextual - Address When Convenient
-
-- TODO/FIXME comments
-- Unused imports or variables
-- Suboptimal comptime usage
-- Excessive debug output
+| Code | Meaning |
+|------|---------|
+| 0 | Success |
+| 1 | Missing requirements |
+| 2 | Beads operation failed |
+| 3 | Claude operation failed (unknown) |
+| 4 | Git operation failed |
+| 5 | Claude subscription/quota limit |
+| 6 | Claude authentication error |
+| 7 | Claude rate limit exceeded |
+| 8 | Claude network failure |
+| 9 | Claude malformed response |
+| 130 | Interrupted (Ctrl+C) |
 
 ---
 
-## Available Claude Tools
+## State Management
 
-### Agents
+hot_ralph creates `.hot_ralph/` in the target project:
 
-| Agent | Model | Purpose |
-|-------|-------|---------|
-| coder-sonnet | sonnet | Fast, precise code changes |
-| gemini-analyzer | sonnet | Large-context analysis via Gemini CLI |
-| build-verifier | sonnet | Cross-platform build validation |
-
-### Skills
-
-| Skill | Purpose |
-|-------|---------|
-| `/test` | Run `zig build test` with optional optimization level |
-
----
-
-## Version Updates (SemVer)
-
-When making commits, update `version` in `build.zig.zon`:
-
-- **MAJOR** (X.0.0): Breaking changes or incompatible API modifications
-- **MINOR** (0.X.0): New features, backward-compatible additions
-- **PATCH** (0.0.X): Bug fixes, small improvements, documentation
+```
+.hot_ralph/
+  state.json           # Current task, phase, counters
+  task_<id>_<ts>.md    # Claude output logs
+  simplify_<id>.md     # Simplification pass output
+  introspection_<ts>.md # Introspection output
+```
 
 ---
 
 ## Issue Tracking: beads_rust (br)
 
-Local-first, non-invasive issue tracker stored in `.beads/`. No external services required.
+Local-first issue tracker stored in `.beads/`.
 
 ### Core Commands
 
 ```bash
 br init                    # Initialize in current repo
-br create "Title"          # Create issue (prompts for details)
-br q "Quick note"          # Quick capture with minimal ID
+br create "Title"          # Create issue
 br list                    # Show all open issues
 br ready                   # Show unblocked, actionable work
 br show <id>               # Display issue details
 br close <id>              # Mark complete
 ```
 
-### Issue Properties
+### Workflow
 
 ```bash
 br create "Bug title" --type bug --priority 1
 br update <id> --status in_progress
-br update <id> --priority 2
-br label add <id> "refactor"
 br dep add <child-id> <parent-id>   # child blocked by parent
+br sync --flush-only                # Export for git commit
 ```
 
 **Priority**: 0=critical, 1=high, 2=medium, 3=low, 4=backlog
-**Status**: open, in_progress, closed, deferred
-**Type**: bug, feature, task
-
-### Filtering
-
-```bash
-br list --status open --priority 1
-br list --type bug --assignee user@example.com
-br list --label "refactor"
-br blocked                  # Issues waiting on dependencies
-```
-
-### Sync for Git
-
-```bash
-br sync --flush-only        # Export DB to .beads/issues.jsonl
-br sync --import-only       # Import JSONL back to DB
-```
-
-**Workflow**: After modifying issues, run `br sync --flush-only` then commit `.beads/`.
-
-### Machine-Readable Output
-
-```bash
-br list --json              # JSON output for scripting
-br ready --json             # Actionable items as JSON
-br show <id> --json         # Single issue as JSON
-```
-
-### Storage
-
-```
-.beads/
-  beads.db      # SQLite database (local state)
-  issues.jsonl  # Git-friendly export (commit this)
-```
 

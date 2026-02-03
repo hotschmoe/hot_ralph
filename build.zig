@@ -22,6 +22,10 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const toon_zig = b.dependency("toon_zig", .{
+        .target = target,
+        .optimize = optimize,
+    });
     // It's also possible to define more custom flags to toggle optional features
     // of this build script using `b.option()`. All defined flags (including
     // target and optimize options) will be listed when running `zig build --help`
@@ -47,6 +51,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .imports = &.{
             .{ .name = "rich_zig", .module = rich_zig.module("rich_zig") },
+            .{ .name = "toon", .module = toon_zig.module("toon_zig") },
         },
     });
 
@@ -89,6 +94,7 @@ pub fn build(b: *std.Build) void {
                 // importing modules from different packages).
                 .{ .name = "hot_ralph", .module = mod },
                 .{ .name = "rich_zig", .module = rich_zig.module("rich_zig") },
+                .{ .name = "toon", .module = toon_zig.module("toon_zig") },
             },
         }),
     });
@@ -163,4 +169,17 @@ pub fn build(b: *std.Build) void {
     //
     // Lastly, the Zig build system is relatively simple and self-contained,
     // and reading its source code will allow you to master it.
+
+    // Fuzz testing step for CI/CD
+    const fuzz_step = b.step("fuzz", "Run fuzz tests");
+    const fuzz_exe = b.addExecutable(.{
+        .name = "fuzz",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/fuzz.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const fuzz_run = b.addRunArtifact(fuzz_exe);
+    fuzz_step.dependOn(&fuzz_run.step);
 }

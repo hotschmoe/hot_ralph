@@ -15,19 +15,110 @@ pub const ClaudeError = error{
     OutOfMemory,
 };
 
+pub const FatalErrorType = enum {
+    subscription_limit, // exit 5
+    auth_error, // exit 6
+    rate_limit, // exit 7
+    network_failure, // exit 8
+    malformed_response, // exit 9
+    unknown, // exit 3
+
+    pub fn toExitCode(self: FatalErrorType) u8 {
+        return switch (self) {
+            .subscription_limit => 5,
+            .auth_error => 6,
+            .rate_limit => 7,
+            .network_failure => 8,
+            .malformed_response => 9,
+            .unknown => 3,
+        };
+    }
+
+    pub fn toString(self: FatalErrorType) []const u8 {
+        return switch (self) {
+            .subscription_limit => "Subscription/quota limit reached",
+            .auth_error => "Authentication error",
+            .rate_limit => "Rate limit exceeded",
+            .network_failure => "Network failure",
+            .malformed_response => "Malformed response",
+            .unknown => "Unknown error",
+        };
+    }
+};
+
+pub fn classifyError(message: []const u8) FatalErrorType {
+    const lower_buf = blk: {
+        var buf: [512]u8 = undefined;
+        const len = @min(message.len, buf.len);
+        for (0..len) |i| {
+            buf[i] = std.ascii.toLower(message[i]);
+        }
+        break :blk buf[0..len];
+    };
+
+    // Rate limit errors - check first since "rate limit exceeded" matches both patterns
+    if (mem.indexOf(u8, lower_buf, "rate limit") != null or
+        mem.indexOf(u8, lower_buf, "429") != null or
+        mem.indexOf(u8, lower_buf, "too many requests") != null or
+        mem.indexOf(u8, lower_buf, "overloaded") != null)
+    {
+        return .rate_limit;
+    }
+
+    // Subscription/quota errors
+    if (mem.indexOf(u8, lower_buf, "subscription") != null or
+        mem.indexOf(u8, lower_buf, "quota") != null or
+        mem.indexOf(u8, lower_buf, "usage limit") != null or
+        mem.indexOf(u8, lower_buf, "limit exceeded") != null or
+        mem.indexOf(u8, lower_buf, "quota exceeded") != null)
+    {
+        return .subscription_limit;
+    }
+
+    // Auth errors
+    if (mem.indexOf(u8, lower_buf, "unauthorized") != null or
+        mem.indexOf(u8, lower_buf, "not authenticated") != null or
+        mem.indexOf(u8, lower_buf, "invalid key") != null or
+        mem.indexOf(u8, lower_buf, "api key") != null or
+        mem.indexOf(u8, lower_buf, "authentication") != null)
+    {
+        return .auth_error;
+    }
+
+    // Network errors
+    if (mem.indexOf(u8, lower_buf, "connection") != null or
+        mem.indexOf(u8, lower_buf, "timeout") != null or
+        mem.indexOf(u8, lower_buf, "network") != null or
+        mem.indexOf(u8, lower_buf, "econnrefused") != null)
+    {
+        return .network_failure;
+    }
+
+    // Malformed response errors
+    if (mem.indexOf(u8, lower_buf, "parse") != null or
+        mem.indexOf(u8, lower_buf, "invalid json") != null or
+        mem.indexOf(u8, lower_buf, "malformed") != null or
+        mem.indexOf(u8, lower_buf, "unexpected") != null)
+    {
+        return .malformed_response;
+    }
+
+    return .unknown;
+}
+
 pub const RunOptions = struct {
-    output_file: []const u8,
     stream_to_terminal: bool = true,
     working_dir: ?[]const u8 = null,
 };
 
 pub const RunResult = union(enum) {
     success: struct {
-        output_file: []const u8,
         response_text: []const u8,
+        raw_json: []const u8,
     },
     failure: struct {
         message: []const u8,
+        error_type: FatalErrorType,
     },
     interrupted,
 };
@@ -55,12 +146,6 @@ pub const Claude = struct {
     }
 
     pub fn run(self: *Claude, prompt: []const u8, opts: RunOptions) !RunResult {
-        // Create output file for writing
-        const output_file = fs.createFileAbsolute(opts.output_file, .{}) catch {
-            return ClaudeError.OutputWriteFailed;
-        };
-        defer output_file.close();
-
         // Spawn claude process
         var child = process.Child.init(&.{
             "claude",
@@ -68,6 +153,7 @@ pub const Claude = struct {
             "--verbose",
             "--output-format",
             "stream-json",
+            "--include-partial-messages",
             "--dangerously-skip-permissions",
             prompt,
         }, self.allocator);
@@ -76,6 +162,7 @@ pub const Claude = struct {
             child.cwd = wd;
         }
 
+        child.stdin_behavior = .Ignore; // Keep stdin for exit monitor
         child.stderr_behavior = .Pipe;
         child.stdout_behavior = .Pipe;
 
@@ -89,7 +176,10 @@ pub const Claude = struct {
 
         const stdout = child.stdout orelse return ClaudeError.SpawnFailed;
         var response_buffer: std.ArrayList(u8) = .empty;
-        defer response_buffer.deinit(self.allocator);
+        errdefer response_buffer.deinit(self.allocator);
+
+        var json_buffer: std.ArrayList(u8) = .empty;
+        errdefer json_buffer.deinit(self.allocator);
 
         var read_buffer: [4096]u8 = undefined;
         var terminal_stdout_buf: [4096]u8 = undefined;
@@ -97,6 +187,12 @@ pub const Claude = struct {
             fs.File.stdout().writer(&terminal_stdout_buf)
         else
             null;
+
+        // Indicate we're waiting for Claude
+        if (terminal_writer_opt) |*writer| {
+            writer.interface.writeAll("[Waiting for Claude...]\n") catch {};
+            writer.interface.flush() catch {};
+        }
 
         while (true) {
             const bytes_read = stdout.read(&read_buffer) catch |err| {
@@ -108,10 +204,8 @@ pub const Claude = struct {
 
             const chunk = read_buffer[0..bytes_read];
 
-            // Write raw JSON to output file
-            output_file.writeAll(chunk) catch {
-                return ClaudeError.OutputWriteFailed;
-            };
+            // Buffer raw JSON in memory
+            try json_buffer.appendSlice(self.allocator, chunk);
 
             // Parse streaming JSON and extract text
             parser.feed(chunk);
@@ -119,17 +213,29 @@ pub const Claude = struct {
             while (parser.next()) |event| {
                 switch (event) {
                     .text => |text| {
+                        defer self.allocator.free(text);
                         try response_buffer.appendSlice(self.allocator, text);
                         if (terminal_writer_opt) |*writer| {
                             writer.interface.writeAll(text) catch {};
                             writer.interface.flush() catch {};
                         }
                     },
-                    .tool_use => {},
-                    .thinking => {},
+                    .tool_use => {
+                        // Silently ignore - matches original bash behavior
+                    },
+                    .thinking => {
+                        if (terminal_writer_opt) |*writer| {
+                            writer.interface.writeAll(".") catch {};
+                            writer.interface.flush() catch {};
+                        }
+                    },
                     .error_msg => |msg| {
+                        // msg is already owned, pass ownership to result
                         return RunResult{
-                            .failure = .{ .message = try self.allocator.dupe(u8, msg) },
+                            .failure = .{
+                                .message = msg,
+                                .error_type = classifyError(msg),
+                            },
                         };
                     },
                 }
@@ -147,27 +253,55 @@ pub const Claude = struct {
             writer.interface.flush() catch {};
         }
 
-        if (result.Exited != 0) {
-            // Check if it was interrupted (signal 130)
-            if (result.Exited == 130 or result.Signal == std.posix.SIG.INT) {
-                return .interrupted;
-            }
-
-            return RunResult{
-                .failure = .{
-                    .message = try std.fmt.allocPrint(
+        switch (result) {
+            .Exited => |code| {
+                if (code == 130) {
+                    return .interrupted;
+                }
+                if (code != 0) {
+                    const exit_msg = try std.fmt.allocPrint(
                         self.allocator,
                         "Claude exited with code {d}",
-                        .{result.Exited},
-                    ),
-                },
-            };
+                        .{code},
+                    );
+                    return RunResult{
+                        .failure = .{
+                            .message = exit_msg,
+                            .error_type = classifyError(exit_msg),
+                        },
+                    };
+                }
+            },
+            .Signal => |sig| {
+                if (sig == std.posix.SIG.INT or sig == std.posix.SIG.TERM) {
+                    return .interrupted;
+                }
+                const exit_msg = try std.fmt.allocPrint(
+                    self.allocator,
+                    "Claude terminated by signal {d}",
+                    .{sig},
+                );
+                return RunResult{
+                    .failure = .{
+                        .message = exit_msg,
+                        .error_type = .unknown,
+                    },
+                };
+            },
+            .Stopped, .Unknown => {
+                return RunResult{
+                    .failure = .{
+                        .message = "Claude process stopped or unknown termination",
+                        .error_type = .unknown,
+                    },
+                };
+            },
         }
 
         return RunResult{
             .success = .{
-                .output_file = opts.output_file,
                 .response_text = try response_buffer.toOwnedSlice(self.allocator),
+                .raw_json = try json_buffer.toOwnedSlice(self.allocator),
             },
         };
     }
@@ -194,6 +328,14 @@ pub const StreamParser = struct {
     }
 
     pub fn deinit(self: *StreamParser) void {
+        // Free any remaining events with owned strings
+        for (self.events.items) |event| {
+            switch (event) {
+                .text => |t| self.allocator.free(t),
+                .error_msg => |m| self.allocator.free(m),
+                else => {},
+            }
+        }
         self.buffer.deinit(self.allocator);
         self.events.deinit(self.allocator);
     }
@@ -238,10 +380,10 @@ pub const StreamParser = struct {
         };
         defer parsed.deinit();
 
-        self.extractEvents(parsed.value);
+        self.extractEvents(parsed.value, true);
     }
 
-    fn extractEvents(self: *StreamParser, value: json.Value) void {
+    fn extractEvents(self: *StreamParser, value: json.Value, dupe_strings: bool) void {
         const obj = switch (value) {
             .object => |o| o,
             else => return,
@@ -249,35 +391,45 @@ pub const StreamParser = struct {
 
         const type_str = getStringField(obj, "type") orelse "";
 
+        // Handle new stream_event wrapper format
+        if (mem.eql(u8, type_str, "stream_event")) {
+            if (obj.get("event")) |event| {
+                self.extractEvents(event, dupe_strings);
+            }
+            return;
+        }
+
         if (mem.eql(u8, type_str, "content_block_delta")) {
             if (obj.get("delta")) |delta| {
-                self.extractDelta(delta);
+                self.extractDelta(delta, dupe_strings);
             }
         } else if (mem.eql(u8, type_str, "error")) {
-            self.extractErrorMessage(obj);
+            self.extractErrorMessage(obj, dupe_strings);
         }
 
         if (obj.get("content")) |content| {
             if (content == .array) {
                 for (content.array.items) |item| {
-                    self.extractContentBlock(item);
+                    self.extractContentBlock(item, dupe_strings);
                 }
             }
         }
 
         if (getStringField(obj, "result")) |result| {
-            self.events.append(self.allocator, .{ .text = result }) catch {};
+            const text = if (dupe_strings) self.allocator.dupe(u8, result) catch return else result;
+            self.events.append(self.allocator, .{ .text = text }) catch {};
         }
     }
 
-    fn extractErrorMessage(self: *StreamParser, obj: json.ObjectMap) void {
+    fn extractErrorMessage(self: *StreamParser, obj: json.ObjectMap, dupe_strings: bool) void {
         const err_obj = obj.get("error") orelse return;
         if (err_obj != .object) return;
         const msg = getStringField(err_obj.object, "message") orelse return;
-        self.events.append(self.allocator, .{ .error_msg = msg }) catch {};
+        const text = if (dupe_strings) self.allocator.dupe(u8, msg) catch return else msg;
+        self.events.append(self.allocator, .{ .error_msg = text }) catch {};
     }
 
-    fn extractDelta(self: *StreamParser, delta: json.Value) void {
+    fn extractDelta(self: *StreamParser, delta: json.Value, dupe_strings: bool) void {
         const delta_obj = switch (delta) {
             .object => |o| o,
             else => return,
@@ -286,7 +438,8 @@ pub const StreamParser = struct {
         const delta_type = getStringField(delta_obj, "type") orelse return;
 
         if (mem.eql(u8, delta_type, "text_delta")) {
-            if (getStringField(delta_obj, "text")) |text| {
+            if (getStringField(delta_obj, "text")) |t| {
+                const text = if (dupe_strings) self.allocator.dupe(u8, t) catch return else t;
                 self.events.append(self.allocator, .{ .text = text }) catch {};
             }
         } else if (mem.eql(u8, delta_type, "input_json_delta")) {
@@ -296,7 +449,7 @@ pub const StreamParser = struct {
         }
     }
 
-    fn extractContentBlock(self: *StreamParser, block: json.Value) void {
+    fn extractContentBlock(self: *StreamParser, block: json.Value, dupe_strings: bool) void {
         const block_obj = switch (block) {
             .object => |o| o,
             else => return,
@@ -305,7 +458,8 @@ pub const StreamParser = struct {
         const block_type = getStringField(block_obj, "type") orelse return;
         if (!mem.eql(u8, block_type, "text")) return;
 
-        if (getStringField(block_obj, "text")) |text| {
+        if (getStringField(block_obj, "text")) |t| {
+            const text = if (dupe_strings) self.allocator.dupe(u8, t) catch return else t;
             self.events.append(self.allocator, .{ .text = text }) catch {};
         }
     }
@@ -331,9 +485,13 @@ test "StreamParser - parse text delta" {
 
     const event = parser.next();
     try std.testing.expect(event != null);
-    try std.testing.expect(event.? == .text);
-    // Note: text content points to freed JSON memory after parseLine completes
-    // Full content testing would require copying strings in the parser
+    switch (event.?) {
+        .text => |t| {
+            try std.testing.expectEqualStrings("Hello", t);
+            allocator.free(t);
+        },
+        else => try std.testing.expect(false),
+    }
 }
 
 test "StreamParser - parse multiple events" {
@@ -352,11 +510,23 @@ test "StreamParser - parse multiple events" {
 
     const event1 = parser.next();
     try std.testing.expect(event1 != null);
-    try std.testing.expect(event1.? == .text);
+    switch (event1.?) {
+        .text => |t| {
+            try std.testing.expectEqualStrings("Hello", t);
+            allocator.free(t);
+        },
+        else => try std.testing.expect(false),
+    }
 
     const event2 = parser.next();
     try std.testing.expect(event2 != null);
-    try std.testing.expect(event2.? == .text);
+    switch (event2.?) {
+        .text => |t| {
+            try std.testing.expectEqualStrings(" World", t);
+            allocator.free(t);
+        },
+        else => try std.testing.expect(false),
+    }
 
     const event3 = parser.next();
     try std.testing.expect(event3 == null);
@@ -384,4 +554,47 @@ test "Claude - init" {
     const allocator = std.testing.allocator;
     const claude = Claude.init(allocator);
     _ = claude;
+}
+
+test "classifyError - subscription limit" {
+    try std.testing.expect(classifyError("Your subscription quota has been exceeded") == .subscription_limit);
+    try std.testing.expect(classifyError("Usage limit reached") == .subscription_limit);
+}
+
+test "classifyError - auth error" {
+    try std.testing.expect(classifyError("Unauthorized: invalid API key") == .auth_error);
+    try std.testing.expect(classifyError("Not authenticated") == .auth_error);
+    try std.testing.expect(classifyError("Authentication failed") == .auth_error);
+}
+
+test "classifyError - rate limit" {
+    try std.testing.expect(classifyError("Rate limit exceeded") == .rate_limit);
+    try std.testing.expect(classifyError("Error 429: too many requests") == .rate_limit);
+    try std.testing.expect(classifyError("Server overloaded") == .rate_limit);
+}
+
+test "classifyError - network failure" {
+    try std.testing.expect(classifyError("Connection refused") == .network_failure);
+    try std.testing.expect(classifyError("Request timeout") == .network_failure);
+    try std.testing.expect(classifyError("Network error") == .network_failure);
+}
+
+test "classifyError - malformed response" {
+    try std.testing.expect(classifyError("Failed to parse response") == .malformed_response);
+    try std.testing.expect(classifyError("Invalid JSON received") == .malformed_response);
+    try std.testing.expect(classifyError("Malformed data") == .malformed_response);
+}
+
+test "classifyError - unknown" {
+    try std.testing.expect(classifyError("Some random error") == .unknown);
+    try std.testing.expect(classifyError("") == .unknown);
+}
+
+test "FatalErrorType - exit codes" {
+    try std.testing.expect(FatalErrorType.subscription_limit.toExitCode() == 5);
+    try std.testing.expect(FatalErrorType.auth_error.toExitCode() == 6);
+    try std.testing.expect(FatalErrorType.rate_limit.toExitCode() == 7);
+    try std.testing.expect(FatalErrorType.network_failure.toExitCode() == 8);
+    try std.testing.expect(FatalErrorType.malformed_response.toExitCode() == 9);
+    try std.testing.expect(FatalErrorType.unknown.toExitCode() == 3);
 }

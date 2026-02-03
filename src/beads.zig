@@ -155,7 +155,7 @@ pub const Beads = struct {
         return result;
     }
 
-    fn taskPriorityLessThan(_: void, a: Task, b: Task) bool {
+    pub fn taskPriorityLessThan(_: void, a: Task, b: Task) bool {
         if (a.priority != b.priority) {
             return a.priority < b.priority;
         }
@@ -172,15 +172,90 @@ pub const Beads = struct {
     }
 
     pub fn claim(self: *Beads, task_id: []const u8) !void {
-        _ = try self.runCommand(&.{ "br", "update", task_id, "--status", "in_progress" });
+        const output = try self.runCommand(&.{ "br", "update", task_id, "--status", "in_progress" });
+        self.allocator.free(output);
     }
 
     pub fn complete(self: *Beads, task_id: []const u8, reason: []const u8) !void {
-        _ = try self.runCommand(&.{ "br", "close", task_id, "--reason", reason });
+        const output = try self.runCommand(&.{ "br", "close", task_id, "--reason", reason });
+        self.allocator.free(output);
     }
 
     pub fn sync(self: *Beads) !void {
-        _ = try self.runCommand(&.{ "br", "sync", "--flush-only" });
+        const output = try self.runCommand(&.{ "br", "sync", "--flush-only" });
+        self.allocator.free(output);
+    }
+
+    pub fn getRelatedBeads(self: *Beads, anchor: *const Task, limit: usize) ![]Task {
+        const all_ready = try self.getAllReady();
+        defer {
+            for (all_ready) |*t| t.deinit();
+            self.allocator.free(all_ready);
+        }
+
+        if (all_ready.len == 0) {
+            return self.allocator.alloc(Task, 0);
+        }
+
+        var related: std.ArrayList(Task) = .empty;
+        errdefer {
+            for (related.items) |*t| t.deinit();
+            related.deinit(self.allocator);
+        }
+
+        // Always include the anchor first
+        try related.append(self.allocator, try anchor.clone(self.allocator));
+
+        // Sort all tasks by priority for consistent ordering
+        std.sort.insertion(Task, all_ready, {}, taskPriorityLessThan);
+
+        // First pass: collect related tasks (shared tags or dependency chain)
+        for (all_ready) |task| {
+            if (related.items.len >= limit) break;
+            if (isTaskInList(task.id, related.items)) continue;
+
+            const is_related = sharesAnyTag(task.tags, anchor.tags) or
+                containsId(anchor.blocks, task.id) or
+                containsId(task.blocks, anchor.id);
+
+            if (is_related) {
+                try related.append(self.allocator, try task.clone(self.allocator));
+            }
+        }
+
+        // Second pass: fill remaining slots with priority-sorted tasks
+        for (all_ready) |task| {
+            if (related.items.len >= limit) break;
+            if (isTaskInList(task.id, related.items)) continue;
+
+            try related.append(self.allocator, try task.clone(self.allocator));
+        }
+
+        std.sort.insertion(Task, related.items, {}, taskPriorityLessThan);
+        return related.toOwnedSlice(self.allocator);
+    }
+
+    fn sharesAnyTag(tags_a: []const []const u8, tags_b: []const []const u8) bool {
+        for (tags_a) |a| {
+            for (tags_b) |b| {
+                if (mem.eql(u8, a, b)) return true;
+            }
+        }
+        return false;
+    }
+
+    fn containsId(ids: []const []const u8, target: []const u8) bool {
+        for (ids) |id| {
+            if (mem.eql(u8, id, target)) return true;
+        }
+        return false;
+    }
+
+    fn isTaskInList(task_id: []const u8, tasks: []const Task) bool {
+        for (tasks) |t| {
+            if (mem.eql(u8, t.id, task_id)) return true;
+        }
+        return false;
     }
 
     fn runCommand(self: *Beads, args: []const []const u8) ![]const u8 {
@@ -212,20 +287,19 @@ pub const Beads = struct {
 
 fn freeTasks(allocator: mem.Allocator, tasks: []Task) void {
     for (tasks) |*task| {
-        var t = task.*;
-        t.deinit();
+        task.deinit();
     }
     allocator.free(tasks);
 }
 
 fn freeStringSlice(allocator: mem.Allocator, slice: []const []const u8) void {
     for (slice) |s| allocator.free(s);
-    if (slice.len > 0) allocator.free(slice);
+    allocator.free(slice);
 }
 
 fn parseStringArray(allocator: mem.Allocator, maybe_val: ?json.Value) ![]const []const u8 {
-    const val = maybe_val orelse return &.{};
-    if (val != .array) return &.{};
+    const val = maybe_val orelse return try allocator.alloc([]const u8, 0);
+    if (val != .array) return try allocator.alloc([]const u8, 0);
 
     var list: std.ArrayList([]const u8) = .empty;
     errdefer {
@@ -408,6 +482,8 @@ test "Task - clone" {
     var tags = try allocator.alloc([]const u8, 1);
     tags[0] = try allocator.dupe(u8, "test");
 
+    const blocks = try allocator.alloc([]const u8, 0);
+
     var original = Task{
         .allocator = allocator,
         .id = try allocator.dupe(u8, "orig123"),
@@ -417,7 +493,7 @@ test "Task - clone" {
         .tags = tags,
         .status = .open,
         .created_at = null,
-        .blocks = &.{},
+        .blocks = blocks,
     };
     defer original.deinit();
 
@@ -427,4 +503,36 @@ test "Task - clone" {
     try std.testing.expectEqualStrings("orig123", cloned.id);
     try std.testing.expectEqualStrings("Original", cloned.title);
     try std.testing.expect(cloned.id.ptr != original.id.ptr);
+}
+
+test "taskPriorityLessThan - sorts by priority" {
+    const allocator = std.testing.allocator;
+
+    const task_low = Task{
+        .allocator = allocator,
+        .id = "low",
+        .title = "Low",
+        .description = null,
+        .priority = 3,
+        .tags = &.{},
+        .status = .open,
+        .created_at = null,
+        .blocks = &.{},
+    };
+
+    const task_high = Task{
+        .allocator = allocator,
+        .id = "high",
+        .title = "High",
+        .description = null,
+        .priority = 1,
+        .tags = &.{},
+        .status = .open,
+        .created_at = null,
+        .blocks = &.{},
+    };
+
+    // Higher priority (lower number) should come first
+    try std.testing.expect(Beads.taskPriorityLessThan({}, task_high, task_low));
+    try std.testing.expect(!Beads.taskPriorityLessThan({}, task_low, task_high));
 }

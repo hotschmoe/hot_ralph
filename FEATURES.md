@@ -338,6 +338,155 @@ Be conservative - only suggest high-value additions.
 
 **State tracking**: `.hot_ralph/state.json` includes `tasks_since_introspection` counter (resets to 0 after introspection runs).
 
+### Plan Mode - DONE
+
+**Problem**: Working on single beads one at a time can be inefficient when multiple related tasks could be planned and executed together.
+
+**Hypothesis**: Using plan mode to implement 5-10 beads in one session will use fewer tokens than processing them individually. Each single-bead invocation pays the full cost of instruction context and project exploration. Batching amortizes that overhead across multiple beads.
+
+**Solution**: `-p` / `--planmode` flag that batches related beads:
+
+1. Query beads for 5-10 related tasks (by tags, dependencies, or semantic similarity)
+2. Instruct Claude to enter plan mode for the batch
+3. User reviews/approves plan (or auto-approve with `-a -p`)
+4. Execute plan, then run normal post-task cycle (simplification, commit, save output)
+
+**Flags**:
+- `-p` / `--planmode`: Enable plan mode batching
+- Combined with `-a`: Auto-approve the generated plan
+
+```bash
+hot_ralph -p              # Plan mode, prompt for approval
+hot_ralph -p -a           # Plan mode, auto-approve plan
+hot_ralph -a              # Normal auto mode, single tasks
+```
+
+**Workflow**:
+```
+[14:00:00] Plan mode enabled. Finding related beads...
+[14:00:02] Found 7 related beads:
+  - abc123: Implement parser base
+  - def456: Add tokenizer
+  - ghi789: Create AST nodes
+  - ... (4 more)
+
+[14:00:03] Entering Claude plan mode...
+[14:01:30] Plan generated. Review: .hot_ralph/20250130_140130_plan.md
+
+Approve plan? [Y/n/view]
+> y
+
+[14:01:35] Executing plan...
+[14:15:00] Plan complete. Running simplification pass...
+[14:16:00] Committing changes...
+```
+
+**Plan prompt**:
+```
+You have the following related beads to implement:
+
+## Beads
+{list of 5-10 beads with titles, descriptions, dependencies}
+
+## Context Files
+@SPEC.md @VISION.md @TESTING.md
+
+Enter plan mode and create an implementation plan that:
+1. Identifies the optimal order considering dependencies
+2. Groups changes that should be made together
+3. Notes any conflicts or decisions needed
+4. Estimates which files will be modified
+
+After plan approval, implement all beads in order.
+```
+
+**Bead selection strategy**:
+- Primary: Beads with shared tags
+- Secondary: Beads in same dependency chain
+- Fallback: Oldest ready beads by priority
+
+**State tracking**: `.hot_ralph/state.json` includes `plan_mode` boolean and `planned_beads` array when active.
+
+### Subscription Limit and Error Handling - DONE
+
+**Problem**: When Claude subscription limits are hit or unknown errors occur, hot_ralph continues cycling and generates noise instead of exiting cleanly.
+
+**Solution**: Detect fatal errors and exit gracefully with actionable messages.
+
+**Error Categories**:
+
+| Category | Detection | Action |
+|----------|-----------|--------|
+| Subscription limit | `rate_limit`, `quota_exceeded` in response | Exit with code 5, show renewal info |
+| Auth expired | `authentication_error`, 401 status | Exit with code 6, prompt re-auth |
+| Unknown Claude error | Unrecognized error structure | Log full response, exit with code 7 |
+| Network failure | Connection refused, timeout | Retry 3x with backoff, then exit code 8 |
+| Malformed response | JSON parse failure on stream | Log partial response, exit code 9 |
+
+**Exit codes** (extending existing):
+| Code | Meaning |
+|------|---------|
+| 5 | Subscription/rate limit reached |
+| 6 | Authentication error |
+| 7 | Unknown Claude error |
+| 8 | Network failure (after retries) |
+| 9 | Malformed response |
+
+**Behavior**:
+```
+[14:32:15] Executing task abc123...
+[14:32:16] ERROR: Subscription limit reached
+
+Your Claude subscription has hit its usage limit.
+- Check usage: https://console.anthropic.com/usage
+- Limits reset: [timestamp if available]
+
+Syncing beads before exit...
+[14:32:17] Beads synced. Exiting with code 5.
+```
+
+**Implementation**:
+```zig
+const ClaudeError = union(enum) {
+    subscription_limit: struct { reset_at: ?i64 },
+    auth_error: []const u8,
+    rate_limit: struct { retry_after: u32 },
+    network: std.net.ConnectError,
+    unknown: struct { raw_response: []const u8 },
+    malformed: struct { partial: []const u8 },
+};
+
+fn handleClaudeError(err: ClaudeError) noreturn {
+    // Sync beads before exit
+    beads.syncOrLog();
+
+    switch (err) {
+        .subscription_limit => |info| {
+            log.err("Subscription limit reached");
+            if (info.reset_at) |ts| {
+                log.info("Resets at: {}", .{formatTimestamp(ts)});
+            }
+            std.process.exit(5);
+        },
+        // ... other cases
+    }
+}
+```
+
+**Retry logic** (network only):
+```
+Attempt 1: immediate
+Attempt 2: wait 2s
+Attempt 3: wait 5s
+After 3 failures: exit with code 8
+```
+
+**Graceful shutdown on any fatal error**:
+1. Log error with full context to `.hot_ralph/{timestamp}_error.md`
+2. Sync beads (`br sync`)
+3. If task was in progress, leave it as `in_progress` (not closed)
+4. Exit with appropriate code
+
 ---
 
 ## Phase 1.9: Context Optimization Research

@@ -22,9 +22,14 @@ pub const Config = struct {
     help_requested: bool,
     version_requested: bool,
     dry_run: bool,
-    verbose: bool,
+    silent: bool,
     quiet: bool,
     introspection_enabled: bool,
+    plan_mode: bool,
+    plan_mode_count: usize,
+    no_clean: bool,
+    clean_mode: bool,
+    clean_target: ?[]const u8,
 
     const OUTPUT_DIR_NAME = ".hot_ralph";
 
@@ -44,13 +49,19 @@ pub const Config = struct {
             .help_requested = args.help_requested,
             .version_requested = args.version_requested,
             .dry_run = args.dry_run,
-            .verbose = args.verbose,
+            .silent = args.silent,
             .quiet = args.quiet,
             .introspection_enabled = args.introspection_enabled,
+            .plan_mode = args.plan_mode,
+            .plan_mode_count = args.plan_mode_count,
+            .no_clean = args.no_clean,
+            .clean_mode = args.clean_mode,
+            .clean_target = if (args.clean_target) |t| try allocator.dupe(u8, t) else null,
         };
     }
 
     pub fn deinit(self: *Config) void {
+        if (self.clean_target) |t| self.allocator.free(t);
         self.allocator.free(self.output_dir);
         self.allocator.free(self.project_dir);
     }
@@ -66,9 +77,16 @@ pub const Args = struct {
     help_requested: bool,
     version_requested: bool,
     dry_run: bool,
-    verbose: bool,
+    silent: bool,
     quiet: bool,
     introspection_enabled: bool,
+    plan_mode: bool,
+    plan_mode_count: usize,
+    no_clean: bool,
+    clean_mode: bool,
+    clean_target: ?[]const u8,
+
+    const DEFAULT_PLAN_MODE_COUNT: usize = 5;
 
     pub fn parse(allocator: mem.Allocator) !Args {
         var args_iter = try std.process.argsWithAllocator(allocator);
@@ -82,12 +100,22 @@ pub const Args = struct {
             .help_requested = false,
             .version_requested = false,
             .dry_run = false,
-            .verbose = false,
+            .silent = false,
             .quiet = false,
             .introspection_enabled = false,
+            .plan_mode = false,
+            .plan_mode_count = DEFAULT_PLAN_MODE_COUNT,
+            .no_clean = false,
+            .clean_mode = false,
+            .clean_target = null,
         };
 
-        while (args_iter.next()) |arg| {
+        var pending_arg: ?[]const u8 = null;
+
+        while (true) {
+            const arg = pending_arg orelse args_iter.next() orelse break;
+            pending_arg = null;
+
             if (mem.eql(u8, arg, "--help") or mem.eql(u8, arg, "-h")) {
                 result.help_requested = true;
             } else if (mem.eql(u8, arg, "--version") or mem.eql(u8, arg, "-V")) {
@@ -96,12 +124,35 @@ pub const Args = struct {
                 result.auto_mode = true;
             } else if (mem.eql(u8, arg, "--dry-run")) {
                 result.dry_run = true;
-            } else if (mem.eql(u8, arg, "--verbose") or mem.eql(u8, arg, "-v")) {
-                result.verbose = true;
+            } else if (mem.eql(u8, arg, "--silent") or mem.eql(u8, arg, "-s")) {
+                result.silent = true;
             } else if (mem.eql(u8, arg, "--quiet") or mem.eql(u8, arg, "-q")) {
                 result.quiet = true;
             } else if (mem.eql(u8, arg, "--introspection") or mem.eql(u8, arg, "-i")) {
                 result.introspection_enabled = true;
+            } else if (mem.eql(u8, arg, "--planmode") or mem.eql(u8, arg, "-p")) {
+                result.plan_mode = true;
+                // Check if next arg is a number for plan_mode_count
+                if (args_iter.next()) |next| {
+                    if (std.fmt.parseInt(usize, next, 10)) |count| {
+                        result.plan_mode_count = count;
+                    } else |_| {
+                        // Not a number, save for next iteration
+                        pending_arg = next;
+                    }
+                }
+            } else if (mem.eql(u8, arg, "--no-clean")) {
+                result.no_clean = true;
+            } else if (mem.eql(u8, arg, "clean")) {
+                result.clean_mode = true;
+                // Next non-flag arg is the clean target
+                if (args_iter.next()) |next| {
+                    if (!mem.startsWith(u8, next, "-")) {
+                        result.clean_target = next;
+                    } else {
+                        pending_arg = next;
+                    }
+                }
             } else if (!mem.startsWith(u8, arg, "-")) {
                 result.project_dir = arg;
             }
@@ -177,6 +228,7 @@ pub fn printHelp(writer: anytype) !void {
         \\
         \\USAGE:
         \\    hot_ralph [OPTIONS] [PROJECT_DIR]
+        \\    hot_ralph clean [DIR]              Clean logs in DIR/.hot_ralph/ (or DIR if .hot_ralph)
         \\
         \\ARGS:
         \\    PROJECT_DIR    Path to project directory (default: current directory)
@@ -186,9 +238,11 @@ pub fn printHelp(writer: anytype) !void {
         \\    -h, --help          Show this help message
         \\    -V, --version       Show version information
         \\    --dry-run           Preview mode: show what would be done without executing
-        \\    -v, --verbose       Verbose output: stream Claude responses to terminal
+        \\    -s, --silent        Silent mode: don't stream Claude responses to terminal
         \\    -q, --quiet         Quiet mode: minimal output
         \\    -i, --introspection Enable periodic introspection after every 5 tasks
+        \\    -p, --planmode [N]  Plan mode: batch N related tasks into single session (default: 5)
+        \\    --no-clean          Skip automatic log cleaning after Claude runs
         \\
         \\REQUIREMENTS:
         \\    Project directory must contain:
@@ -207,15 +261,20 @@ pub fn printHelp(writer: anytype) !void {
         \\    0    Success - all tasks complete
         \\    1    Error - missing requirements
         \\    2    Error - Beads operation failed
-        \\    3    Error - Claude operation failed
+        \\    3    Error - Claude operation failed (unknown)
         \\    4    Error - Git operation failed
+        \\    5    Error - Claude subscription/quota limit
+        \\    6    Error - Claude authentication error
+        \\    7    Error - Claude rate limit exceeded
+        \\    8    Error - Claude network failure
+        \\    9    Error - Claude malformed response
         \\    130  Interrupted (Ctrl+C)
         \\
     );
 }
 
 pub fn printVersion(writer: anytype) !void {
-    try writer.writeAll("hot_ralph 0.2.0\n");
+    try writer.writeAll("hot_ralph 0.5.0\n");
 }
 
 test "Args.parse - default values" {
@@ -225,18 +284,28 @@ test "Args.parse - default values" {
         .help_requested = false,
         .version_requested = false,
         .dry_run = false,
-        .verbose = false,
+        .silent = false,
         .quiet = false,
         .introspection_enabled = false,
+        .plan_mode = false,
+        .plan_mode_count = Args.DEFAULT_PLAN_MODE_COUNT,
+        .no_clean = false,
+        .clean_mode = false,
+        .clean_target = null,
     };
     try std.testing.expect(args.project_dir == null);
     try std.testing.expect(!args.auto_mode);
     try std.testing.expect(!args.help_requested);
     try std.testing.expect(!args.version_requested);
     try std.testing.expect(!args.dry_run);
-    try std.testing.expect(!args.verbose);
+    try std.testing.expect(!args.silent);
     try std.testing.expect(!args.quiet);
     try std.testing.expect(!args.introspection_enabled);
+    try std.testing.expect(!args.plan_mode);
+    try std.testing.expectEqual(@as(usize, 5), args.plan_mode_count);
+    try std.testing.expect(!args.no_clean);
+    try std.testing.expect(!args.clean_mode);
+    try std.testing.expect(args.clean_target == null);
 }
 
 test "Config.init - with project dir" {
@@ -247,9 +316,14 @@ test "Config.init - with project dir" {
         .help_requested = false,
         .version_requested = false,
         .dry_run = true,
-        .verbose = false,
+        .silent = false,
         .quiet = true,
         .introspection_enabled = false,
+        .plan_mode = false,
+        .plan_mode_count = 7,
+        .no_clean = false,
+        .clean_mode = false,
+        .clean_target = null,
     };
 
     var config = try Config.init(allocator, args);
@@ -260,4 +334,5 @@ test "Config.init - with project dir" {
     try std.testing.expect(config.dry_run);
     try std.testing.expect(config.quiet);
     try std.testing.expect(mem.endsWith(u8, config.output_dir, ".hot_ralph"));
+    try std.testing.expectEqual(@as(usize, 7), config.plan_mode_count);
 }
