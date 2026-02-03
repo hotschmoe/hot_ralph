@@ -169,4 +169,17 @@ pub fn build(b: *std.Build) void {
     //
     // Lastly, the Zig build system is relatively simple and self-contained,
     // and reading its source code will allow you to master it.
+
+    // Fuzz testing step for CI/CD
+    const fuzz_step = b.step("fuzz", "Run fuzz tests");
+    const fuzz_exe = b.addExecutable(.{
+        .name = "fuzz",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/fuzz.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const fuzz_run = b.addRunArtifact(fuzz_exe);
+    fuzz_step.dependOn(&fuzz_run.step);
 }

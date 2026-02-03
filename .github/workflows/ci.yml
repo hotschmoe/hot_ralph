@@ -67,6 +67,7 @@ jobs:
     name: Fuzz Tests
     needs: version-check
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -77,9 +78,7 @@ jobs:
           version: ${{ env.ZIG_VERSION }}
 
       - name: Run Fuzz Tests
-        run: |
-          timeout 60 zig build test --fuzz || true
-        continue-on-error: true
+        run: timeout 60 zig build fuzz || true
 
   format:
     name: Format Check
