@@ -1,18 +1,38 @@
 name: CI
 
 on:
-  push:
-    branches: [master]
   pull_request:
     branches: [master]
-  workflow_dispatch:
 
 env:
   ZIG_VERSION: "0.15.2"
 
 jobs:
+  version-check:
+    name: Version Bump Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Needed for version comparison
+
+      - name: Check Version Bump
+        run: |
+          PR_VERSION=$(sed -n 's/.*\.version = "\([^"]*\)".*/\1/p' build.zig.zon)
+          git fetch origin master
+          MASTER_VERSION=$(git show origin/master:build.zig.zon | sed -n 's/.*\.version = "\([^"]*\)".*/\1/p')
+          echo "PR version: $PR_VERSION"
+          echo "Master version: $MASTER_VERSION"
+          if [ "$PR_VERSION" = "$MASTER_VERSION" ]; then
+            echo "::error::Version not bumped! Update .version in build.zig.zon"
+            exit 1
+          fi
+          echo "Version bump verified: $MASTER_VERSION -> $PR_VERSION"
+
   test:
     name: Test (${{ matrix.os }}, ${{ matrix.optimize }})
+    needs: version-check
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -45,6 +65,7 @@ jobs:
 
   fuzz:
     name: Fuzz Tests
+    needs: version-check
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -62,6 +83,7 @@ jobs:
 
   format:
     name: Format Check
+    needs: version-check
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -77,6 +99,7 @@ jobs:
 
   docs:
     name: Documentation
+    needs: version-check
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -93,6 +116,7 @@ jobs:
 
   package:
     name: Package Validation
+    needs: version-check
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -161,40 +185,3 @@ jobs:
           EOF
 
           zig build
-
-  release:
-    name: Create Release
-    runs-on: ubuntu-latest
-    needs: [test, format, package]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Extract Version
-        id: version
-        run: |
-          VERSION=$(grep -oP '\.version = "\K[^"]+' build.zig.zon)
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Detected version: $VERSION"
-
-      - name: Check if Tag Exists
-        id: check_tag
-        run: |
-          if git rev-parse "v${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
-            echo "exists=true" >> $GITHUB_OUTPUT
-          else
-            echo "exists=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Create Release
-        if: steps.check_tag.outputs.exists == 'false'
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: v${{ steps.version.outputs.version }}
-          name: Release v${{ steps.version.outputs.version }}
-          generate_release_notes: true
-          draft: false
-          prerelease: ${{ contains(steps.version.outputs.version, '-') }}
