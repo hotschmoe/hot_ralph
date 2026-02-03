@@ -427,13 +427,18 @@ test "generateCleanedPath no extension" {
 test "generateLogPath creates timestamped path" {
     const allocator = std.testing.allocator;
 
-    const path = try generateLogPath(allocator, "/output", "task_abc");
+    const path = try generateLogPath(allocator, "output", "task_abc");
     defer allocator.free(path);
 
-    // Verify format: /output/YYYYMMDD_HHMMSS_task_abc.md
+    // Verify format: output{sep}YYYYMMDD_HHMMSS_task_abc.md
     try std.testing.expect(path.len > 0);
-    try std.testing.expect(std.mem.startsWith(u8, path, "/output/"));
+    try std.testing.expect(std.mem.startsWith(u8, path, "output"));
     try std.testing.expect(std.mem.endsWith(u8, path, "_task_abc.md"));
-    // Should have timestamp portion: 8 digits + _ + 6 digits = 15 chars
-    try std.testing.expect(path.len >= "/output/".len + 15 + "_task_abc.md".len);
+
+    // Extract filename (after last separator)
+    const basename = fs.path.basename(path);
+    // Filename should be: YYYYMMDD_HHMMSS_task_abc.md
+    // Timestamp: 8 digits + _ + 6 digits + _ = 16 chars minimum
+    try std.testing.expect(basename.len >= 16 + "task_abc.md".len);
+    try std.testing.expect(std.mem.endsWith(u8, basename, "_task_abc.md"));
 }
