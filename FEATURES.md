@@ -563,16 +563,102 @@ Cache Claude's "understanding" locally:
 
 ---
 
-## Deferred to Phase 2 (TUI)
+## Phase 2: TUI and Loop Refinement
 
-These features require terminal UI and are out of scope for Phase 1:
+Inspiration: [Chief](https://github.com/minicodemonkey/chief) - a Go tool that orchestrates Claude Code with a Bubble Tea TUI and clean iterative loop. Chief calls this the "Ralph Wiggum loop" -- each iteration gets a fresh context window while progress persists between runs. We should study Chief's approach and take what works while building on our Zig/rich_zig foundation.
 
-- Live task tree visualization
-- Streaming output panel
-- Git status indicators
-- Keyboard navigation
-- Task reordering UI
-- Metrics dashboard
+### Loop Architecture Cleanup
+
+**Problem**: The current main loop mixes orchestration, I/O, and state transitions. As we add TUI, this coupling will fight us.
+
+**Inspiration from Chief**: Chief cleanly separates the iteration loop from presentation. Each iteration is atomic -- fresh Claude context, single task, atomic commit. Progress is tracked externally so any single iteration can fail without corrupting state.
+
+**Goals**:
+- Extract the core loop into a clean state machine: `idle -> claim -> execute -> simplify -> commit -> idle`
+- Each state transition is explicit and testable
+- Loop body is presentation-agnostic (CLI and TUI are just different renderers)
+- Failed iterations leave state recoverable (already partially done via checkpoint/resume)
+
+### TUI Dashboard (rich_zig)
+
+**Problem**: CLI output scrolls away. No at-a-glance view of session progress.
+
+**Inspiration from Chief**: Chief's Bubble Tea TUI shows task list, execution status, and lets the user press `s` to start. Interactive but minimal.
+
+**Solution**: Full-screen TUI using rich_zig with panels:
+
+```
++-------------------------------------------+
+| hot_ralph v0.5.0    [3/12 tasks]   14:32  |
++-------------------+-----------------------+
+| TASKS             | OUTPUT                |
+|                   |                       |
+| [x] abc123 parse  | Running claude...     |
+| [x] def456 token  | > Implementing the    |
+| [>] ghi789 AST    |   parser module with  |
+| [ ] jkl012 eval   |   proper error...     |
+| [ ] mno345 repl   |                       |
+|                   |                       |
++-------------------+-----------------------+
+| STATUS: executing ghi789 | git: clean     |
++-------------------------------------------+
+```
+
+**Panels**:
+- **Task list**: Ready/in-progress/done with scroll, current task highlighted
+- **Output stream**: Live Claude output (replaces terminal scroll)
+- **Status bar**: Current phase, git status, task counts, elapsed time
+
+**Keyboard**:
+- `s` - Start/resume execution
+- `p` - Pause after current task
+- `e` - Exit after current task (mirrors existing)
+- `j/k` - Scroll task list
+- `v` - Toggle verbose output
+- `q` - Quit (with confirmation if task in progress)
+- `tab` - Cycle focus between panels
+
+### Live Task Tree
+
+**Problem**: Flat task list hides dependency relationships.
+
+**Solution**: Tree view showing blocked/unblocked chains:
+
+```
+TASKS
+  [x] abc123 Implement parser base
+    [>] ghi789 Create AST nodes       <- unblocked by abc123
+      [ ] jkl012 Add evaluator        <- blocked by ghi789
+  [x] def456 Add tokenizer
+  [ ] mno345 Build REPL               <- blocked by jkl012, def456
+```
+
+Collapse/expand subtrees. Color-code by status.
+
+### Streaming Output Panel
+
+**Problem**: Claude output floods the terminal. Hard to read while it streams.
+
+**Solution**: Dedicated scrollable panel for Claude's streaming response:
+- Auto-scroll during execution, manual scroll when paused
+- Syntax highlighting for code blocks
+- Wrap long lines, respect terminal width
+- Keep last N tasks' output in a ring buffer for review
+
+### Git Status Indicators
+
+**Solution**: Persistent status in the TUI footer:
+- Branch name, dirty/clean indicator
+- Last push time, push status (pending/success/failed)
+- Uncommitted file count
+
+### Session Metrics
+
+**Solution**: Running counters in the TUI header:
+- Tasks completed / total ready
+- Session duration
+- Token usage (parsed from Claude stream-json cost fields)
+- Average time per task
 
 ---
 
